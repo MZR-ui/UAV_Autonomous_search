@@ -1,0 +1,5 @@
+<launch>
+    <node name="remote_info" pkg="remote_info" type="remote_info_node" output="screen">
+        <rosparam command="load" file="$(find remote_info)/config/remote_config.yaml" />
+    </node>
+</launch>

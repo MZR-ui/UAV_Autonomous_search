@@ -1,0 +1,4 @@
+<launch>
+    <rosparam command="load" file="$(find subtask)/config/subtask.yaml" />
+    <node name="task_1_base_act" pkg="subtask" type="task_1_base_act" output="screen" />
+</launch>

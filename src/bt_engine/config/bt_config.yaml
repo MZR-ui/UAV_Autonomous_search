@@ -1,0 +1,24 @@
+# BT Engine 配置
+tick_rate: 100.0            # BT tick 频率 (Hz)
+default_channels: 16        # 通道数
+channel_default: 1500       # 默认中立值
+channel_min: 1000           # 最低 PWM
+channel_max: 2000           # 最高 PWM
+
+# /control_data 发布频率
+publish_rate: 100.0
+
+# 起飞技能参数
+enable_height_monitor: false    # 高度偏差 DANGER 监测（拆桨测试时 false）
+landing_height_threshold: 0.1   # 着陆判定：测距高度阈值 (m)
+landing_hold_time: 2.0          # 着陆判定：持续时长 (s)
+hover_reach_hold_time: 0.0      # 提前到高度悬停：达标持续确认时长 (s)，0=一达标立即切悬停，靠惯性到位
+hover_reach_threshold: 0.85      # 提前到高度悬停：触发高度阈值 (m)，z≥该值即切悬停（原 1.0-0.1=0.9；想减超调可降到 0.8 提前切）
+hover_ch3: 1500                 # 悬停时 CH3 值（POSHOLD/SURFACE 定高中位，1500=维持高度）
+hover_ch6: 2000                 # 悬停时 CH6 值（2000=POSHOLD+SURFACE 模式）
+
+# 起飞 PID 修正参数（对轨迹油门的小幅反馈修正）
+# 实测 Kp=200 会把轨迹油门 1420 推到 ~1470，导致爬升速度过快、超调 0.22m → 降到 80
+kp: 80.0       # 比例：误差(m) → PWM 油门修正（前馈轨迹是主力，PID 只做小幅修正）
+ki: 10.0       # 积分：消除稳态误差（按 0.02s/tick 累积，作用弱）
+kd: 8.0        # 微分：抑制超调（接近目标时按爬升速度主动收油门；测距噪声大就降到 2~3）

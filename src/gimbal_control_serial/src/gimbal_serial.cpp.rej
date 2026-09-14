@@ -1,0 +1,14 @@
+--- gimbal_serial.cpp
++++ gimbal_serial.cpp
+@@ -10,6 +10,11 @@
+ GimbalSerial::~GimbalSerial()
+ {
+     close();
+ }
+ 
++void GimbalSerial::setReceiveCallback(ReceiveCallback cb)
++{
++    receive_cb_ = cb;
++}
++
+ bool GimbalSerial::open()

@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>bt_engine</name>
+  <version>0.1.0</version>
+  <description>Behavior Tree engine for UAV skill scheduling (BehaviorTree.CPP V4)</description>
+  <maintainer email="mzr@example.com">mzr</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>roscpp</build_depend>
+  <build_depend>msp_interface</build_depend>
+  <build_depend>remote_info</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>behaviortree_cpp</build_depend>
+  <build_export_depend>behaviortree_cpp</build_export_depend>
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>msp_interface</exec_depend>
+  <exec_depend>remote_info</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>behaviortree_cpp</exec_depend>
+</package>

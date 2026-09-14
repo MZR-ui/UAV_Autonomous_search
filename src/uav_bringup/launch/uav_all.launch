@@ -1,0 +1,44 @@
+<launch>
+    <!-- 
+        UAV 系统主启动文件
+        包含所有功能包的 launch 文件，一键启动全部节点。
+        各子 launch 文件位于各自功能包的 launch 目录中。
+    -->
+
+    <!-- 直接启动 remote_info 节点 -->
+    <node name="remote_info" pkg="remote_info" type="remote_info_node" output="screen">
+        <rosparam command="load" file="$(find remote_info)/config/remote_config.yaml" />
+    </node>
+
+    <!-- 包含 MSP 接口节点（飞控通信） -->
+    <include file="$(find msp_interface)/launch/msp_interface.launch">
+        <!-- 如需覆盖默认参数，可在此添加 arg 传递，例如：
+        <arg name="port" value="/dev/ttyUSB0" />
+        <arg name="baud" value="115200" />
+        -->
+    </include>
+
+    <!-- 以下两个节点暂时屏蔽 -->
+    <include file="$(find gimbal_control_serial)/launch/gimbal_control.launch">
+        <rosparam command="load" file="$(find gimbal_control_serial)/config/serial.yaml" />
+    </include>
+    
+    <include file="$(find sensing)/launch/realsense.launch"/>
+
+    <!-- 如果需要节点间话题重映射，可以在此直接启动节点并 remap，但通常在各子 launch 中处理更合适。
+         若全局需统一话题名称，也可在 include 后使用 remap 标签（需放在 node 标签内）。此处不添加示例。
+    -->
+
+    <!-- 可以额外添加全局参数服务器参数 -->
+    <!-- <param name="use_sim_time" value="false" /> -->
+    <!-- BT 引擎（替代 task_manager + subtask） -->
+    <include file="$(find bt_engine)/launch/bt_engine.launch"/>
+
+    <!-- rosbag 录制（从 mode_manage 拆出） -->
+    <include file="$(find msp_interface)/launch/rosbag_recorder.launch"/>
+
+    <!-- 原 task_manager + subtask 已被 BT 替代，暂时保留代码不删 -->
+    <!-- <include file="$(find task_manager)/launch/task_manager.launch" /> -->
+    <!-- <include file="$(find subtask)/launch/subtask.launch" /> -->
+
+</launch>

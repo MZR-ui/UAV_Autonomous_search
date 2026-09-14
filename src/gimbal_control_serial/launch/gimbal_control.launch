@@ -1,0 +1,7 @@
+<launch>
+    <node pkg="gimbal_control_serial" type="gimbal_control_node" name="gimbal_control_node" output="screen">
+        <param name="port_name" value="/dev/ttyUSB0"/>
+        <param name="baud_rate" value="115200"/>
+        <param name="publish_rate" value="50.0"/>
+    </node>
+</launch>

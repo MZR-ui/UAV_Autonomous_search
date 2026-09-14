@@ -1,0 +1,55 @@
+# ===== 起飞技能元描述 =====
+name: "liftoff"
+description: "从地面解锁到 1m 悬停的起飞全过程"
+
+# ===== 轨迹文件 =====
+trajectory:
+  file: "trajectory.csv"
+  interval: 0.02                   # s
+  fields: [throttle, pitch, roll, yaw]
+  note: "油门从 1000 非对称 S 曲线(拐点前移≈0.32，前快后长缓收)升至 1420，持续 5s。pitch/roll/yaw 保持中立 1500。"
+
+# ===== 前置条件 =====
+preconditions:
+  - in_auto_mode: true             # CH8 >= 1350
+  - arming_flags_ok: true          # armingFlags == 1 (OK_TO_ARM)
+  - hardware_healthy: true         # overallHealth == 1
+  - is_armed: true                 # armingFlags bit 1 (ARMED)
+  - motors_spinning: true          # /msp/motor velocity > 0
+  - height_lt: 0.1                 # 尚未离地
+  - trigger_ch5_gt: 1750           # CH5 > 1750 触发
+
+# ===== 异常监控 =====
+anomaly:
+  levels:
+    NORMAL:   "|偏差| < 0.1m → 按轨迹输出，无修正"
+    DEVIATED: "|偏差| ∈ [0.1m, 0.5m] → PID 修正油门，不中断"
+    DANGER:   "|偏差| > 0.5m → 触发 FAILURE，由 BT TryCatch 接管"
+
+  sensors:
+    - /msp/attitude                # 姿态角 (roll, pitch, yaw)
+    - /msp/altitude                # 融合高度 (z)
+    - /msp/imu                     # 加速度 (ax, ay, az)
+    - /msp/motor                   # 电机转速
+
+  tolerance_low: 0.1               # NORMAL/DEVIATED 边界 (m)
+  tolerance_high: 0.5              # DEVIATED/DANGER 边界 (m)
+
+# ===== 约束 =====
+constraints:
+  completion:
+    position: [0.0, 0.0, 1.0]      # 目标 (x, y, z) m
+    velocity: [0.0, 0.0, 0.0]      # 终点静止
+  spatial_bound: [0.1, 0.1, 1.2]   # 路径不超过 (x, y, z) m
+  max_acceleration: 9.8            # < g
+  timeout: 10.0                     # 超时 (s)，轨道 5s + 余量
+
+# ===== 结束后状态 =====
+on_success:
+  action: "set_channel"
+  channel: 6
+  value: 2000                      # POSHOLD + SURFACE 高位
+  next_skill: "hover"              # 进入悬停技能
+
+on_failure:
+  action: "emergency_land"         # 降落 → 上锁

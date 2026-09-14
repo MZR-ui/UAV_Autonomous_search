@@ -1,0 +1,4 @@
+channel_index: 4      # 遥控器通道5（索引从0开始）
+threshold_low: 1300
+threshold_high: 1700
+publish_rate: 10.0

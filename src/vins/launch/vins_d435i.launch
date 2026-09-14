@@ -1,0 +1,6 @@
+<launch>
+    <!-- VINS-Fusion 双目惯性定位（D435i）
+         依赖：sensing/realsense.launch 已启动（提供 /camera/imu + /camera/infra1 + /camera/infra2） -->
+    <node name="vins_estimator" pkg="vins" type="vins_node" output="screen"
+          args="$(find vins)/config/d435i/vins_stereo_imu_config.yaml" />
+</launch>

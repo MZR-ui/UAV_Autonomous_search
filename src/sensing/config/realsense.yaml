@@ -1,0 +1,21 @@
+# sensing/config/realsense.yaml
+camera_name: d435i
+enable_color: true
+enable_depth: true
+enable_imu: true
+enable_accel: true
+enable_gyro: true
+
+color_width: 640
+color_height: 480
+color_fps: 30
+
+depth_width: 640
+depth_height: 480
+depth_fps: 30
+
+# 对齐深度到彩色，后续语义分割用彩色图像
+align_depth: true
+
+# 关闭自动曝光，避免画面闪烁（可根据环境调节）
+enable_auto_exposure: false

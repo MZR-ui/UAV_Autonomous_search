@@ -1,0 +1,3 @@
+gim_port_name: "/dev/ttyUSB1"
+gim_baud_rate: 115200
+gim_publish_rate: 50

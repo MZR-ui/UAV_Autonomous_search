@@ -1,0 +1,12 @@
+<launch>
+    <arg name="channel_rate" default="100.0" />
+    
+    <node name="msp_interface" pkg="msp_interface" type="msp_interface_node" output="screen">
+        <rosparam command="load" file="$(find msp_interface)/config/serial.yaml" />
+    </node>
+
+    <node name="mode_manage" pkg="msp_interface" type="mode_manage_node" output="screen">
+        <rosparam command="load" file="$(find msp_interface)/config/mode_manage.yaml" />
+        <param name="publish_rate" value="$(arg channel_rate)" />
+    </node>
+</launch>

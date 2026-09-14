@@ -1,0 +1,4 @@
+publish_rate: 100.0        # 控制指令发布频率
+throttle_idle: 1000       # 空闲油门（PWM值）
+throttle_auto: 1500       # 自动模式油门
+# 可添加更多参数...

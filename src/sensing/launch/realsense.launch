@@ -1,0 +1,28 @@
+<launch>
+    <!-- VIO 专用配置：只启用红外双目 + IMU（VINS-Fusion 输入）。
+         color/depth 关闭，避免叠加红外双目后 USB 带宽溢出（USB CAM overflow）。
+         如需 color/depth（如避障、三维重建），后续按需单独开一个 launch。 -->
+
+    <!-- 关闭红外投射器（emitter）：投射散斑会干扰双目特征匹配 / VIO，标定后需关闭。
+         realsense2_camera 2.3.2 在节点启动时从 param server 读取该参数
+         （对应 RS2_OPTION_EMITTER_ENABLED），等价于手动：
+         rosrun dynamic_reconfigure dynparam set /camera/stereo_module emitter_enabled 0
+         注意：emitter_enabled 是 int 枚举（0=关/1=开），不是 bool，必须用 int -->
+    <param name="/camera/stereo_module/emitter_enabled" type="int" value="0"/>
+
+    <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+        <arg name="enable_color" value="false"/>
+        <arg name="enable_depth" value="false"/>
+        <!-- 红外双目（VIO 输入） -->
+        <arg name="enable_infra1" value="true"/>
+        <arg name="enable_infra2" value="true"/>
+        <arg name="infra_width" value="640"/>
+        <arg name="infra_height" value="480"/>
+        <arg name="infra_fps" value="30"/>
+        <!-- IMU（VIO 输入） -->
+        <arg name="enable_gyro" value="true"/>
+        <arg name="enable_accel" value="true"/>
+        <arg name="unite_imu_method" value="linear_interpolation"/>
+        <arg name="align_depth" value="false"/>
+    </include>
+</launch>

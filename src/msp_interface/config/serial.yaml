@@ -1,0 +1,26 @@
+# 串口配置参数
+# port: "/dev/ttyACM0"   # 飞控连接的串口设备
+port: "/dev/ttyACM0"   # 飞控连接的串口设备
+# baud: 115200           # 波特率，必须与飞控设置一致
+baud: 460800           # 波特率，必须与飞控设置一致
+debug: true           # 调试模式开关（如需更详细日志可设为 true）
+
+# 主循环频率 (Hz)
+loop_rate: 1000.0
+
+# 传感器请求频率 (Hz)
+sensor_rate: 50.0
+
+# 模拟通道数据 (仅测试用)
+simulate_channels: false   # 启用模拟通道
+channel_rate: 50.0         # 模拟通道发送频率
+# MSP Message Request Rates (Hz)
+rate_102: 100.0   # IMU
+rate_109: 1.0   # Altitude
+rate_106: 1.0    # GPS
+rate_104: 20.0   # Motor
+rate_0x2000: 10.0 # Status (armingFlags，解锁确认需快速响应)
+rate_0x2002: 1.0 # Analog (Battery)
+rate_0x2220: 10.0 # Full Local Pose (Attitude)
+rate_0x2041: 20.0 # ESC Telem
+rate_0x3A: 10.0  # Rangefinder (Sonar Altitude)

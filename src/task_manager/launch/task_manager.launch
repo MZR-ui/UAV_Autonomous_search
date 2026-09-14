@@ -1,0 +1,4 @@
+<launch>
+    <rosparam command="load" file="$(find task_manager)/config/task_manager.yaml" />
+    <node name="task_manager" pkg="task_manager" type="task_manager_node" output="screen" />
+</launch>

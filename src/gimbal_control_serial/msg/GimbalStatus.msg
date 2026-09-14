@@ -1,0 +1,9 @@
+std_msgs/Header header
+uint8 fw_ver
+uint8 hw_err
+uint8 inv_flag
+uint8 gbc_stat
+uint8 tca_flag
+int16[3] cam_rate
+int16[3] cam_angle
+int16[3] mtr_angle

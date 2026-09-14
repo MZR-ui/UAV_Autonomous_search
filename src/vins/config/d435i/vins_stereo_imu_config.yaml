@@ -1,0 +1,79 @@
+%YAML:1.0
+
+#common parameters
+#support: 1 imu 1 cam; 1 imu 2 cam: 2 cam;
+# NOTE: 根因是标定 + 红外投射器（非 IMU 硬件损伤），已在 realsense.launch 关闭 emitter。
+#       已切回双目 + IMU（imu: 1）。
+imu: 1
+num_of_cam: 2
+
+imu_topic: "/camera/imu"
+image0_topic: "/camera/infra1/image_rect_raw"
+image1_topic: "/camera/infra2/image_rect_raw"
+output_path: "/home/mzr/lmw_catkin_ws/uav_ws/data/vins/"
+
+cam0_calib: "left.yaml"
+cam1_calib: "right.yaml"
+image_width: 640
+image_height: 480
+
+
+# Extrinsic parameter between IMU and Camera.
+estimate_extrinsic: 0   # 0  Have an accurate extrinsic parameters. We will trust the following imu^R_cam, imu^T_cam, don't change it.
+                        # 1  Have an initial guess about extrinsic parameters. We will optimize around your initial guess.
+
+body_T_cam0: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [0.9999809901484301, 0.004883654209443078, 
+        -0.003764208194200244, -0.0016958884509578917,
+         -0.004907704539335227, 0.9999674339146776, 
+         -0.006406679814930235, 0.010274773216749918,
+          0.003732797599828279, 0.006425031646539571, 
+          0.9999723922141156, 0.020139981513450197,
+          0.0, 0.0, 0.0, 1.0]
+
+body_T_cam1: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [0.9999823267160672, 0.004969753432148504, 
+        -0.0032630976609607427, 0.047974546052631614,
+         -0.004991814502986645, 0.9999645031382542, 
+         -0.0067878016642202174, 0.009997351582111359,
+          0.003229248130616706, 0.006803970479702769, 
+          0.9999716385689261, 0.020560812503779575,
+          0.0, 0.0, 0.0, 1.0]
+
+#Multiple thread support
+multiple_thread: 1
+
+#feature traker paprameters
+max_cnt: 100            # max feature number in feature tracking
+min_dist: 40            # min distance between two features
+freq: 10                # frequence (Hz) of publish tracking result. At least 10Hz for good estimation. If set 0, the frequence will be same as raw image
+F_threshold: 1.0        # ransac threshold (pixel)
+show_track: 0           # publish tracking image as topic
+flow_back: 1            # perform forward and backward optical flow to improve feature tracking accuracy
+
+#optimization parameters
+max_solver_time: 0.04  # max solver itration time (ms), to guarantee real time
+max_num_iterations: 6   # max solver itrations, to guarantee real time
+keyframe_parallax: 10.0 # keyframe selection threshold (pixel)
+
+#imu parameters       The more accurate parameters you provide, the better performance
+acc_n: 0.0010203484730916578          # accelerometer measurement noise standard deviation. #0.2   0.04
+gyr_n: 0.00015934691793355698         # gyroscope measurement noise standard deviation.     #0.05  0.004
+acc_w: 2.715328761954082e-05         # accelerometer bias random work noise standard deviation.  #0.002
+gyr_w: 1.9953084760525453e-06       # gyroscope bias random work noise standard deviation.     #4.0e-5
+g_norm: 9.80665         # gravity magnitude
+
+#unsynchronization parameters
+estimate_td: 0                      # online estimate time offset between camera and imu
+td: -0.0074050671691031885                             # initial value of time offset. unit: s. readed image clock + td = real image clock (IMU clock)
+
+#loop closure parameters
+load_previous_pose_graph: 0        # load and reuse previous pose graph; load from 'pose_graph_save_path'
+pose_graph_save_path: "/home/mzr/lmw_catkin_ws/uav_ws/data/vins/pose_graph/" # save and load path
+save_image: 0                   # save image in pose graph for visualization prupose; you can close this function by setting 0

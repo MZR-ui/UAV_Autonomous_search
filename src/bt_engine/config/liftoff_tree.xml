@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root BTCPP_format="4">
+  <BehaviorTree ID="uav_liftoff">
+    <ReactiveSequence>
+      <!--
+        起飞技能树
+        ===========
+
+        前提: 遥控器 CH8 >= 1350（自动模式）
+
+        流程:
+          1. 模式守护 (in_auto_mode)
+          2. 解锁并等待确认 (arm_action，幂等，尊重 ch5_release_required 锁存)
+          3. 起飞技能 (skill_executor: IDLE→TAKEOFF→HOVER→LANDING 生命周期，
+             起飞/降落触发与 CH5 语义由其内部拥有)
+
+        异常:
+          - in_auto_mode 变 false → ReactiveSequence 立即中断，回退手动
+          - arm_action / skill_executor 被中断 → 各自 onHalted 处理
+      -->
+
+      <!-- 模式守护 -->
+      <Condition ID="in_auto_mode"/>
+
+      <!-- 解锁（发送 ARM 并等待确认，尊重 ch5_release_required 锁存） -->
+      <Action ID="arm_action"/>
+
+      <!-- 起飞技能：IDLE → TAKEOFF → HOVER → LANDING 生命周期
+           （起飞/降落触发与 CH5 语义由 skill_executor 内部拥有） -->
+      <Action ID="skill_executor" skill="起飞技能"/>
+
+    </ReactiveSequence>
+  </BehaviorTree>
+</root>

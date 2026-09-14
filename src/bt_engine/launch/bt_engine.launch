@@ -1,0 +1,11 @@
+<launch>
+    <arg name="tick_rate" default="100.0"/>
+    <arg name="xml_path" default="$(find bt_engine)/config/liftoff_tree.xml"/>
+    <arg name="skills_dir" default="$(find bt_engine)/skills"/>
+
+    <node name="bt_server" pkg="bt_engine" type="bt_server_node" output="screen">
+        <rosparam command="load" file="$(find bt_engine)/config/bt_config.yaml"/>
+        <param name="xml_path" value="$(arg xml_path)"/>
+        <param name="skills_dir" value="$(arg skills_dir)"/>
+    </node>
+</launch>

@@ -1,0 +1,28 @@
+# mode_manage_node 参数配置
+
+# ===== 通道发送参数 =====
+publish_rate: 100.0          # 通道下发频率 (Hz)
+max_channels: 16             # 通道数
+remote_timeout: 0.1          # 遥控超时 (s)
+control_timeout: 0.1         # 控制数据超时 (s)
+gimbal_angle_range: 45.0     # 云台角度范围 (deg)
+
+# ===== Rosbag 录制参数 =====
+# 保存目录
+bag_save_dir: "/home/mzr/lmw_catkin_ws/uav_ws/data/rosbag"
+# 最多保留的 bag 文件数 (超过会从最旧开始删)
+max_bag_files: 100
+# 单个 bag 的最大录制时长 (秒)，默认 600s = 10min
+max_record_duration: 600.0
+# CH5 阈值 (PWM)；手动模式下 CH5 >= 阈值开始录、< 阈值停止录（自动模式忽略 CH5）
+ch5_threshold: 1350
+# CH8 阈值 (PWM)；>= 阈值视为自动模式（进入即全程录），< 阈值视为手动模式（按 CH5 触发）
+auto_mode_threshold: 1350
+# 单个包到时长上限后，若 CH5 仍处于 HIGH，是否自动开新包继续录
+auto_restart_on_timeout: true
+
+# ===== RealSense 相机录制参数 =====
+# 是否同时录制 RealSense 深度相机的图像与深度数据（与飞控数据同一 bag）
+record_realsense: true
+# 是否同时录制红外双目 + IMU（VIO 输入：/camera/imu、/camera/infra1|2/image_rect_raw）
+record_camera_infra: true
