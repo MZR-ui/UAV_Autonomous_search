@@ -30,7 +30,6 @@ int main(int argc, char** argv)
     double hover_reach_hold_time = 0.0;
     double kp = 200.0, ki = 10.0, kd = 0.0;
     double hover_reach_threshold = 0.9;
-    int hover_ch3 = 1500, hover_ch6 = 2000;
     nh_priv.param<double>("tick_rate", tick_rate, 100.0);
     nh_priv.param<std::string>("xml_path", xml_path, "");
     nh_priv.param<std::string>("skills_dir", skills_dir, "");
@@ -42,8 +41,62 @@ int main(int argc, char** argv)
     nh_priv.param<double>("ki", ki, 10.0);
     nh_priv.param<double>("kd", kd, 0.0);
     nh_priv.param<double>("hover_reach_threshold", hover_reach_threshold, 0.9);
-    nh_priv.param<int>("hover_ch3", hover_ch3, 1500);
-    nh_priv.param<int>("hover_ch6", hover_ch6, 2000);
+
+    // ---- 轨迹跟踪参数 ----
+    std::string feedback_mode = "closed_loop";
+    double target_x = 2.0, target_y = 0.0, target_z = 1.0;
+    std::string duration_mode = "auto";
+    double fixed_duration = 0.0;
+    double cruise_speed = 0.5, T_min = 2.0, T_max = 8.0;
+    double arrive_tol = 0.1, vel_tol = 0.1, arrive_hold = 1.0;
+    double danger_tol = 0.8, timeout_traj = 12.0, odom_stale_timeout = 0.3;
+    int ch6_mid_low = 1400, ch6_mid_high = 1600;
+    double ch6_debounce = 0.3;
+    bool gimbal_lock = true;
+    std::string height_source = "rangefinder";
+    double hover_hold_before_traj = 5.0;
+    int override_threshold = 10;
+    double kp_xy = 1.0, kp_z = 2.0, kd_xy = 0.5, kd_z = 0.8;
+    double gravity = 9.81, angle_max = 0.35;
+    double hover_throttle = 1420.0, k_thr = 30.0;
+    double pitch_sign = -1.0, roll_sign = 1.0;
+    bool yaw_enabled = false;
+    double yaw_kp = 0.0;
+
+    nh_priv.param<std::string>("feedback_mode", feedback_mode, "closed_loop");
+    nh_priv.param<double>("target_x", target_x, 2.0);
+    nh_priv.param<double>("target_y", target_y, 0.0);
+    nh_priv.param<double>("target_z", target_z, 1.0);
+    nh_priv.param<std::string>("duration_mode", duration_mode, "auto");
+    nh_priv.param<double>("fixed_duration", fixed_duration, 0.0);
+    nh_priv.param<double>("cruise_speed", cruise_speed, 0.5);
+    nh_priv.param<double>("T_min", T_min, 2.0);
+    nh_priv.param<double>("T_max", T_max, 8.0);
+    nh_priv.param<double>("arrive_tol", arrive_tol, 0.1);
+    nh_priv.param<double>("vel_tol", vel_tol, 0.1);
+    nh_priv.param<double>("arrive_hold", arrive_hold, 1.0);
+    nh_priv.param<double>("danger_tol", danger_tol, 0.8);
+    nh_priv.param<double>("timeout_traj", timeout_traj, 12.0);
+    nh_priv.param<double>("odom_stale_timeout", odom_stale_timeout, 0.3);
+    nh_priv.param<int>("ch6_mid_low", ch6_mid_low, 1400);
+    nh_priv.param<int>("ch6_mid_high", ch6_mid_high, 1600);
+    nh_priv.param<double>("ch6_debounce", ch6_debounce, 0.3);
+    nh_priv.param<bool>("gimbal_lock", gimbal_lock, true);
+    nh_priv.param<std::string>("height_source", height_source, "rangefinder");
+    nh_priv.param<double>("hover_hold_before_traj", hover_hold_before_traj, 5.0);
+    nh_priv.param<int>("override_threshold", override_threshold, 10);
+    nh_priv.param<double>("kp_xy", kp_xy, 1.0);
+    nh_priv.param<double>("kp_z", kp_z, 2.0);
+    nh_priv.param<double>("kd_xy", kd_xy, 0.5);
+    nh_priv.param<double>("kd_z", kd_z, 0.8);
+    nh_priv.param<double>("gravity", gravity, 9.81);
+    nh_priv.param<double>("angle_max", angle_max, 0.35);
+    nh_priv.param<double>("hover_throttle", hover_throttle, 1420.0);
+    nh_priv.param<double>("k_thr", k_thr, 30.0);
+    nh_priv.param<double>("pitch_sign", pitch_sign, -1.0);
+    nh_priv.param<double>("roll_sign", roll_sign, 1.0);
+    nh_priv.param<bool>("yaw_enabled", yaw_enabled, false);
+    nh_priv.param<double>("yaw_kp", yaw_kp, 0.0);
 
     // 初始化 Backend
     RosBackend::instance().init(nh);
@@ -85,8 +138,42 @@ int main(int argc, char** argv)
     tree.rootBlackboard()->set("ki", ki);
     tree.rootBlackboard()->set("kd", kd);
     tree.rootBlackboard()->set("hover_reach_threshold", hover_reach_threshold);
-    tree.rootBlackboard()->set("hover_ch3", hover_ch3);
-    tree.rootBlackboard()->set("hover_ch6", hover_ch6);
+
+    // ---- 轨迹跟踪参数 ----
+    tree.rootBlackboard()->set("feedback_mode", feedback_mode);
+    tree.rootBlackboard()->set("target_x", target_x);
+    tree.rootBlackboard()->set("target_y", target_y);
+    tree.rootBlackboard()->set("target_z", target_z);
+    tree.rootBlackboard()->set("duration_mode", duration_mode);
+    tree.rootBlackboard()->set("fixed_duration", fixed_duration);
+    tree.rootBlackboard()->set("cruise_speed", cruise_speed);
+    tree.rootBlackboard()->set("T_min", T_min);
+    tree.rootBlackboard()->set("T_max", T_max);
+    tree.rootBlackboard()->set("arrive_tol", arrive_tol);
+    tree.rootBlackboard()->set("vel_tol", vel_tol);
+    tree.rootBlackboard()->set("arrive_hold", arrive_hold);
+    tree.rootBlackboard()->set("danger_tol", danger_tol);
+    tree.rootBlackboard()->set("timeout_traj", timeout_traj);
+    tree.rootBlackboard()->set("odom_stale_timeout", odom_stale_timeout);
+    tree.rootBlackboard()->set("ch6_mid_low", ch6_mid_low);
+    tree.rootBlackboard()->set("ch6_mid_high", ch6_mid_high);
+    tree.rootBlackboard()->set("ch6_debounce", ch6_debounce);
+    tree.rootBlackboard()->set("gimbal_lock", gimbal_lock);
+    tree.rootBlackboard()->set("height_source", height_source);
+    tree.rootBlackboard()->set("hover_hold_before_traj", hover_hold_before_traj);
+    tree.rootBlackboard()->set("override_threshold", override_threshold);
+    tree.rootBlackboard()->set("kp_xy", kp_xy);
+    tree.rootBlackboard()->set("kp_z", kp_z);
+    tree.rootBlackboard()->set("kd_xy", kd_xy);
+    tree.rootBlackboard()->set("kd_z", kd_z);
+    tree.rootBlackboard()->set("gravity", gravity);
+    tree.rootBlackboard()->set("angle_max", angle_max);
+    tree.rootBlackboard()->set("hover_throttle", hover_throttle);
+    tree.rootBlackboard()->set("k_thr", k_thr);
+    tree.rootBlackboard()->set("pitch_sign", pitch_sign);
+    tree.rootBlackboard()->set("roll_sign", roll_sign);
+    tree.rootBlackboard()->set("yaw_enabled", yaw_enabled);
+    tree.rootBlackboard()->set("yaw_kp", yaw_kp);
     std::vector<uint16_t> channels(16, 1500);
     channels[0] = 1500;  // CH1 roll 中立
     channels[1] = 1500;  // CH2 pitch 中立

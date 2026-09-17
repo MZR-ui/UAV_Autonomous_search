@@ -1,6 +1,7 @@
 #include <ros/ros.h>
 #include <mutex>
 #include <vector>
+#include <cstdlib>
 #include "msp_interface/MspChannel.h"
 #include "remote_info/Remote.h"
 #include "gimbal_control_serial/GimbalCmd.h"
@@ -19,6 +20,7 @@ public:
         nh_priv_.param<double>("remote_timeout", remote_timeout_, 0.1);
         nh_priv_.param<double>("control_timeout", control_timeout_, 0.1);
         nh_priv_.param<double>("gimbal_angle_range", gimbal_angle_range_, 45.0);
+        nh_priv_.param<int>("override_threshold", override_threshold_, 10);
 
         channel_pub_ = nh_.advertise<msp_interface::MspChannel>("msp_channel", 1);
         remote_sub_ = nh_.subscribe("remote_order", 1, &ModeControllerNode::remoteCallback, this);
@@ -99,11 +101,37 @@ private:
                 }
             }
             else if (control_valid && use_control_data_) {
-                // 自动模式：直接转发 BT 输出的完整通道数组
+                // 自动模式：转发 BT 输出，姿态/云台通道支持手动接管 override
                 cmd_msg.channels.assign(max_channels_, 1500);
                 size_t n = std::min(last_control_channels_.size(), static_cast<size_t>(max_channels_));
                 for (size_t i = 0; i < n; ++i)
                     cmd_msg.channels[i] = last_control_channels_[i];
+
+                if (remote_valid) {
+                    // 姿态通道 CH1/CH2/CH4：偏离中立超阈值 → 交还遥控
+                    static const int axes[3] = {0, 1, 3};
+                    for (int i : axes) {
+                        if (last_remote_channels_.size() > static_cast<size_t>(i) &&
+                            std::abs(static_cast<int>(last_remote_channels_[i]) - 1500) > override_threshold_)
+                            cmd_msg.channels[i] = last_remote_channels_[i];
+                    }
+                    // 云台通道 CH9/CH10：偏离超阈值 → 发云台指令（复用同款公式）
+                    if (last_remote_channels_.size() >= 10) {
+                        bool gimbal_override =
+                            (std::abs(static_cast<int>(last_remote_channels_[8]) - 1500) > override_threshold_) ||
+                            (std::abs(static_cast<int>(last_remote_channels_[9]) - 1500) > override_threshold_);
+                        if (gimbal_override) {
+                            float roll = (last_remote_channels_[8] - 1500.0f) / 500.0f * gimbal_angle_range_;
+                            float yaw  = (last_remote_channels_[9] - 1500.0f) / 500.0f * gimbal_angle_range_;
+                            gimbal_control_serial::GimbalCmd gimbal_msg;
+                            gimbal_msg.roll  = roll;
+                            gimbal_msg.pitch = 0.0f;
+                            gimbal_msg.yaw   = yaw;
+                            gimbal_msg.mode  = 0;
+                            gimbal_pub_.publish(gimbal_msg);
+                        }
+                    }
+                }
             }
             else if (remote_valid) {
                 // 回退：RC 直通
@@ -144,6 +172,7 @@ private:
 
     ros::Publisher gimbal_pub_;
     double gimbal_angle_range_;
+    int override_threshold_;
 };
 
 } // namespace msp_interface

@@ -5,6 +5,10 @@
 #include <cmath>
 #include "../skill_loader.h"
 #include "../ros_backend.h"
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
+#include "../trajectory/min_snap.h"
+#include "../trajectory/position_controller.h"
 
 /**
  * @brief 起飞技能执行器：IDLE → TAKEOFF → HOVER → LANDING 生命周期状态机
@@ -35,9 +39,23 @@ public:
         , state_(State::IDLE), enable_height_monitor_(false)
         , landing_height_threshold_(0.1), landing_hold_time_(2.0), hover_reach_hold_time_(0.0)
         , kp_(200.0), ki_(10.0), kd_(0.0), hover_reach_threshold_(0.9)
-        , hover_ch3_(1500), hover_ch6_(2000)
         , landed_since_(ros::Time(0))
         , reached_since_(ros::Time(0))
+        , feedback_mode_("closed_loop")
+        , target_(2.0, 0.0, 1.0)
+        , duration_mode_("auto"), fixed_duration_(0.0)
+        , cruise_speed_(0.5), T_min_(2.0), T_max_(8.0)
+        , arrive_tol_(0.1), vel_tol_(0.1), arrive_hold_(1.0)
+        , danger_tol_(0.8), timeout_traj_(12.0), odom_stale_timeout_(0.3)
+        , ch6_mid_low_(1400), ch6_mid_high_(1600), ch6_debounce_(0.3)
+        , gimbal_lock_(true)
+        , traj_start_time_(ros::Time(0))
+        , ch6_mid_since_(ros::Time(0))
+        , arrived_since_(ros::Time(0))
+        , height_source_("rangefinder"), h0_(0.0)
+        , hover_hold_before_traj_(5.0), override_threshold_(10)
+        , hover_target_(0.0, 0.0, 0.0)
+        , hover_entered_since_(ros::Time(0))
     {}
 
     static BT::PortsList providedPorts()
@@ -63,8 +81,45 @@ public:
         bb->get("ki", ki_);
         bb->get("kd", kd_);
         bb->get("hover_reach_threshold", hover_reach_threshold_);
-        bb->get("hover_ch3", hover_ch3_);
-        bb->get("hover_ch6", hover_ch6_);
+
+        // ---- 轨迹跟踪参数 ----
+        bb->get("feedback_mode", feedback_mode_);
+        double tx = target_.x(), ty = target_.y(), tz = target_.z();
+        bb->get("target_x", tx); bb->get("target_y", ty); bb->get("target_z", tz);
+        target_ = Eigen::Vector3d(tx, ty, tz);
+        bb->get("duration_mode", duration_mode_);
+        bb->get("fixed_duration", fixed_duration_);
+        bb->get("cruise_speed", cruise_speed_);
+        bb->get("T_min", T_min_);
+        bb->get("T_max", T_max_);
+        bb->get("arrive_tol", arrive_tol_);
+        bb->get("vel_tol", vel_tol_);
+        bb->get("arrive_hold", arrive_hold_);
+        bb->get("danger_tol", danger_tol_);
+        bb->get("timeout_traj", timeout_traj_);
+        bb->get("odom_stale_timeout", odom_stale_timeout_);
+        bb->get("ch6_mid_low", ch6_mid_low_);
+        bb->get("ch6_mid_high", ch6_mid_high_);
+        bb->get("ch6_debounce", ch6_debounce_);
+        bb->get("gimbal_lock", gimbal_lock_);
+        bb->get("height_source", height_source_);
+        bb->get("hover_hold_before_traj", hover_hold_before_traj_);
+        bb->get("override_threshold", override_threshold_);
+
+        // ---- 位置控制器参数 ----
+        ctrl_params_.feedback_enabled = (feedback_mode_ == "closed_loop");
+        bb->get("kp_xy", ctrl_params_.kp_xy);
+        bb->get("kp_z", ctrl_params_.kp_z);
+        bb->get("kd_xy", ctrl_params_.kd_xy);
+        bb->get("kd_z", ctrl_params_.kd_z);
+        bb->get("gravity", ctrl_params_.gravity);
+        bb->get("angle_max", ctrl_params_.angle_max);
+        bb->get("hover_throttle", ctrl_params_.hover_throttle);
+        bb->get("k_thr", ctrl_params_.k_thr);
+        bb->get("pitch_sign", ctrl_params_.pitch_sign);
+        bb->get("roll_sign", ctrl_params_.roll_sign);
+        bb->get("yaw_enabled", ctrl_params_.yaw_enabled);
+        bb->get("yaw_kp", ctrl_params_.yaw_kp);
 
         // 路径约定: <skills_dir>/<skill_name>/trajectory.csv + meta.yaml
         std::string skills_dir;
@@ -97,15 +152,18 @@ public:
     {
         // 快照遥测数据（读取输入 CH5、测距高度、armingFlags）
         auto& rb = RosBackend::instance();
-        bool ch5_high = false, ch5_low = false;
+        bool ch5_high = false, ch5_low = false, ch6_mid = false, override_active = false;
         double current_z = 0.0;
         uint32_t flags = 0;
         {
             std::lock_guard<std::mutex> lock(rb.mutex());
             const auto& ch = rb.remoteChannels();
             uint16_t ch5 = (ch.size() > 4) ? ch[4] : 0;
+            uint16_t ch6 = (ch.size() > 5) ? ch[5] : 0;
             ch5_high = (ch5 > 1750);
             ch5_low  = (ch5 < 1750);
+            ch6_mid  = (ch6 >= ch6_mid_low_ && ch6 <= ch6_mid_high_);
+            override_active = lateralOverrideDetected(ch);
             current_z = rb.rangefinder();
             flags = rb.armingFlags();
         }
@@ -113,7 +171,8 @@ public:
         switch (state_) {
             case State::IDLE:    return runIdle(ch5_high, ch5_low, flags);
             case State::TAKEOFF: return runTakeoff(ch5_high, current_z);
-            case State::HOVER:   return runHover(ch5_low);
+            case State::HOVER:   return runHover(ch5_low, ch6_mid, override_active);
+            case State::TRAJECTORY: return runTrajectory(ch6_mid, override_active);
             case State::LANDING: return runLanding(current_z, flags);
         }
         return BT::NodeStatus::RUNNING;
@@ -126,7 +185,7 @@ public:
     }
 
 private:
-    enum class State { IDLE, TAKEOFF, HOVER, LANDING };
+    enum class State { IDLE, TAKEOFF, HOVER, TRAJECTORY, LANDING };
 
     // ---- 待命：等解锁 + CH5 上升沿 ----
     BT::NodeStatus runIdle(bool ch5_high, bool ch5_low, uint32_t flags)
@@ -189,11 +248,9 @@ private:
         if (current_z >= reach_threshold) {
             if (reached_since_ == ros::Time(0)) reached_since_ = ros::Time::now();
             if ((ros::Time::now() - reached_since_).toSec() >= hover_reach_hold_time_) {
-                ROS_INFO("SkillExecutor: 提前到达目标高度 (z=%.2fm, 阈值=%.2fm) → 悬停 (CH6=2000)",
+                ROS_INFO("SkillExecutor: 提前到达目标高度 (z=%.2fm, 阈值=%.2fm) → 悬停 (上位机 ANGLE 定高)",
                          current_z, reach_threshold);
-                state_ = State::HOVER;
-                setChannel(2, hover_ch3_);  // CH3 油门 → SURFACE 中位
-                setChannel(5, hover_ch6_);  // CH6 POSHOLD+SURFACE
+                enterHover();
                 return BT::NodeStatus::RUNNING;
             }
         } else {
@@ -204,10 +261,8 @@ private:
         if (traj_index_ >= trajectory_.time.size()) {
             double final_error = std::abs(meta_.target_z - current_z);
             if (final_error <= meta_.tolerance_high) {
-                ROS_INFO("SkillExecutor: 轨迹完成 → 悬停 (z=%.2fm, CH6=2000)", current_z);
-                state_ = State::HOVER;
-                setChannel(2, hover_ch3_);  // CH3 油门 → SURFACE 中位（目标高度 1m）
-                setChannel(5, hover_ch6_);  // CH6 POSHOLD+SURFACE
+                ROS_INFO("SkillExecutor: 轨迹完成 → 悬停 (z=%.2fm, 上位机 ANGLE 定高)", current_z);
+                enterHover();
             } else {
                 // 轨迹时间走完但没爬到目标高度（拆桨/卡住）→ 等同超时，中止上锁
                 ROS_WARN("SkillExecutor: 轨迹走完未达目标高度 (z=%.2fm, target=%.2fm) → 中止上锁",
@@ -264,11 +319,23 @@ private:
         return BT::NodeStatus::RUNNING;
     }
 
-    // ---- 悬停：保持 CH6 高位，检测降落触发 ----
-    BT::NodeStatus runHover(bool ch5_low)
+    // ---- 悬停：上位机 ANGLE 定高定点，检测降落触发 / CH6 中档轨迹触发 ----
+    BT::NodeStatus runHover(bool ch5_low, bool ch6_mid, bool override_active)
     {
-        setChannel(5, hover_ch6_);  // CH6 保持 POSHOLD+SURFACE
+        // 遥控 CH6 中档 → 触发轨迹跟踪（去抖 + 需悬停稳定达标）
+        if (ch6_mid) {
+            if (ch6_mid_since_ == ros::Time(0)) ch6_mid_since_ = ros::Time::now();
+            double stable = (ros::Time::now() - hover_entered_since_).toSec();
+            if ((ros::Time::now() - ch6_mid_since_).toSec() >= ch6_debounce_
+                && stable >= hover_hold_before_traj_) {
+                if (enterTrajectory())
+                    return BT::NodeStatus::RUNNING;
+            }
+        } else {
+            ch6_mid_since_ = ros::Time(0);
+        }
 
+        // CH5 拨低 → 降落
         if (ch5_low) {
             ROS_INFO("SkillExecutor: 悬停后 CH5 拨低 → 降落 (CH7=2000 RTH)");
             state_ = State::LANDING;
@@ -276,8 +343,233 @@ private:
             setChannel(5, 1000);  // CH6 降到 ANGLE（RTH 未接管时的安全后备）
             setChannel(6, 2000);  // CH7 RTH（无 GPS 时飞控自动降落）
             landed_since_ = ros::Time(0);
+            return BT::NodeStatus::RUNNING;
         }
+
+        // 位置控制：悬停定高定点（目标 = hover_target_）
+        Eigen::Vector3d p_M, v_M;
+        if (!readState(p_M, v_M)) {
+            abort();
+            return BT::NodeStatus::RUNNING;
+        }
+        applyController(hover_target_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
+                        p_M, v_M, override_active);
         return BT::NodeStatus::RUNNING;
+    }
+
+    // ---- 轨迹跟踪：最小 snap + 位置控制器 ----
+    BT::NodeStatus runTrajectory(bool ch6_mid, bool override_active)
+    {
+        const bool closed = (feedback_mode_ == "closed_loop");
+
+        // 1. CH6 出中档带 → 中止（降落+上锁）
+        if (!ch6_mid) {
+            ROS_WARN("SkillExecutor: 轨迹跟踪中 CH6 出中档 → 中止上锁");
+            abort();
+            return BT::NodeStatus::RUNNING;
+        }
+
+        double elapsed = (ros::Time::now() - traj_start_time_).toSec();
+
+        // 2. 超时 → 中止
+        if (elapsed > timeout_traj_) {
+            ROS_WARN("SkillExecutor: 轨迹超时 (%.1fs > %.1fs) → 中止上锁", elapsed, timeout_traj_);
+            abort();
+            return BT::NodeStatus::RUNNING;
+        }
+
+        // 3. 参考轨迹
+        Eigen::Vector3d p_ref, v_ref, a_ref;
+        traj_.evaluate(elapsed, p_ref, v_ref, a_ref);
+
+        // 4. 读测量（水平 VINS + 垂直高度源）；闭环失效返回 false
+        Eigen::Vector3d p_M, v_M;
+        if (!readState(p_M, v_M)) {
+            abort();
+            return BT::NodeStatus::RUNNING;
+        }
+
+        // 5. DANGER：位置误差超限（闭环且非接管让位）
+        if (closed && !override_active) {
+            double err = (p_M - p_ref).norm();
+            if (err > danger_tol_) {
+                ROS_ERROR("SkillExecutor: 位置误差 %.2fm > %.2fm → 中止上锁", err, danger_tol_);
+                abort();
+                return BT::NodeStatus::RUNNING;
+            }
+        }
+
+        // 6. 到达判定：闭环按位置/速度，开环按时间
+        bool done = false;
+        if (closed) {
+            double to_target = (p_M - target_).norm();
+            done = (elapsed >= traj_.totalTime()) && (to_target <= arrive_tol_) && (v_M.norm() <= vel_tol_);
+        } else {
+            done = (elapsed >= traj_.totalTime());
+        }
+
+        if (done) {
+            if (arrived_since_ == ros::Time(0)) arrived_since_ = ros::Time::now();
+            if ((ros::Time::now() - arrived_since_).toSec() >= arrive_hold_) {
+                ROS_INFO("SkillExecutor: 到达目标 (%.2f,%.2f,%.2f) → 回上位机 ANGLE 悬停",
+                         p_M.x(), p_M.y(), p_M.z());
+                hover_target_ = target_;
+                hover_entered_since_ = ros::Time::now();
+                state_ = State::HOVER;
+                arrived_since_ = ros::Time(0);
+                return BT::NodeStatus::RUNNING;
+            }
+        } else {
+            arrived_since_ = ros::Time(0);
+        }
+
+        // 7. 控制器输出（写 CH1-CH4，CH6 恒 ANGLE）
+        applyController(p_ref, v_ref, a_ref, p_M, v_M, override_active);
+
+        ROS_DEBUG_THROTTLE(2.0, "SkillExecutor: TRAJ t=%.2f p=(%.2f,%.2f,%.2f) ref=(%.2f,%.2f,%.2f)",
+                           elapsed, p_M.x(), p_M.y(), p_M.z(), p_ref.x(), p_ref.y(), p_ref.z());
+
+        return BT::NodeStatus::RUNNING;
+    }
+
+    // ---- 进入悬停：记录任务系原点、高度源基准 ----
+    void enterHover()
+    {
+        auto& rb = RosBackend::instance();
+        {
+            std::lock_guard<std::mutex> lock(rb.mutex());
+            if (rb.hasOdom()) {
+                p0_W_ = rb.odomPos();
+                buildTaskFrame(rb.odomQuat());
+            } else {
+                p0_W_ = Eigen::Vector3d::Zero();
+                R_WM_ = Eigen::Matrix3d::Identity();
+            }
+            // 高度源基准 h0（vins 源用任务系 z，无需额外基准）
+            if (height_source_ == "barometer")      h0_ = rb.altitude();
+            else if (height_source_ != "vins")      h0_ = rb.rangefinder();
+            else                                     h0_ = 0.0;
+        }
+        hover_target_ = Eigen::Vector3d::Zero();
+        hover_entered_since_ = ros::Time::now();
+        state_ = State::HOVER;
+        ROS_INFO("SkillExecutor: 进入悬停 height_source=%s h0=%.2fm", height_source_.c_str(), h0_);
+    }
+
+    // ---- 读取任务系测量（水平 VINS + 垂直高度源相对值）；闭环失效返回 false ----
+    bool readState(Eigen::Vector3d& p_M, Eigen::Vector3d& v_M)
+    {
+        const bool closed = (feedback_mode_ == "closed_loop");
+        auto& rb = RosBackend::instance();
+        p_M.setZero(); v_M.setZero();
+        bool odom_ok = false; double odom_age = 1e9;
+
+        {
+            std::lock_guard<std::mutex> lock(rb.mutex());
+            if (rb.hasOdom()) {
+                p_M = R_WM_.transpose() * (rb.odomPos() - p0_W_);
+                v_M = R_WM_.transpose() * rb.odomVel();
+                odom_age = (ros::Time::now() - rb.odomStamp()).toSec();
+                odom_ok = true;
+            }
+            // 垂直用高度源相对值（rangefinder/barometer 覆盖 VINS z）
+            if (height_source_ == "barometer") {
+                p_M.z() = rb.altitude() - h0_;
+                v_M.z() = 0.0;
+            } else if (height_source_ != "vins") {   // 默认 rangefinder
+                p_M.z() = rb.rangefinder() - h0_;
+                v_M.z() = 0.0;
+            }
+        }
+
+        if (closed && (!odom_ok || odom_age > odom_stale_timeout_)) {
+            ROS_ERROR("SkillExecutor: VINS 位姿失效 (ok=%d, age=%.2fs) → 中止上锁", odom_ok, odom_age);
+            return false;
+        }
+        return true;
+    }
+
+    // ---- 位置控制器输出（写 CH1-CH4，CH6 恒 ANGLE；override_active 时仅垂直） ----
+    void applyController(const Eigen::Vector3d& p_ref, const Eigen::Vector3d& v_ref,
+                         const Eigen::Vector3d& a_ref, const Eigen::Vector3d& p_M,
+                         const Eigen::Vector3d& v_M, bool override_active)
+    {
+        ctrl_params_.lateral_enabled = !override_active;   // 接管 → 仅垂直让位
+        trajectory::CtrlOutput out;
+        trajectory::PositionController(ctrl_params_).update(p_ref, v_ref, a_ref, p_M, v_M, 0.0, out);
+        setChannel(0, out.roll_pwm);      // CH1 roll
+        setChannel(1, out.pitch_pwm);     // CH2 pitch
+        setChannel(2, out.throttle_pwm);  // CH3 油门
+        setChannel(3, out.yaw_pwm);       // CH4 yaw
+        setChannel(5, 1000);              // CH6 ANGLE（全程）
+    }
+
+    // ---- 检测遥控姿态通道接管（CH1/CH2/CH4 偏离中立超阈值） ----
+    bool lateralOverrideDetected(const std::vector<uint16_t>& ch)
+    {
+        static const int axes[3] = {0, 1, 3};  // CH1 roll / CH2 pitch / CH4 yaw
+        for (int i : axes) {
+            if (ch.size() > static_cast<size_t>(i) &&
+                std::abs(static_cast<int>(ch[i]) - 1500) > override_threshold_)
+                return true;
+        }
+        return false;
+    }
+
+    // ---- 进入轨迹跟踪：以当前悬停点为起点生成轨迹 ----
+    bool enterTrajectory()
+    {
+        const bool closed = (feedback_mode_ == "closed_loop");
+
+        // 轨迹起点 = 当前任务系位置（无跳变）
+        Eigen::Vector3d p_start = Eigen::Vector3d::Zero();
+        Eigen::Vector3d v_dummy;
+        if (closed && !readState(p_start, v_dummy)) {
+            ROS_WARN("SkillExecutor: 触发轨迹但 VINS 无位姿 → 忽略，保持悬停");
+            ch6_mid_since_ = ros::Time(0);
+            return false;
+        }
+
+        const double T = planDuration((target_ - p_start).norm());
+        traj_ = trajectory::MinSnapTrajectory::singleSegment(p_start, target_, T);
+
+        traj_start_time_ = ros::Time::now();
+        arrived_since_ = ros::Time(0);
+        state_ = State::TRAJECTORY;
+
+        if (gimbal_lock_)
+            ROS_INFO("SkillExecutor: 轨迹跟踪开始，云台锁定（不发送云台指令）");
+        ROS_INFO("SkillExecutor: 进入轨迹跟踪 start=(%.2f,%.2f,%.2f) target=(%.2f,%.2f,%.2f) T=%.2fs %s",
+                 p_start.x(), p_start.y(), p_start.z(),
+                 target_.x(), target_.y(), target_.z(), T, closed ? "closed_loop" : "open_loop");
+        return true;
+    }
+
+    // 由 VINS 四元数构建任务系（近水平：机体 z ≈ 重力向上）
+    void buildTaskFrame(const Eigen::Quaterniond& q)
+    {
+        Eigen::Matrix3d R_WB = q.toRotationMatrix();
+        Eigen::Vector3d z_W = R_WB * Eigen::Vector3d::UnitZ();   // 机体 z ≈ 上
+        z_W.normalize();
+        Eigen::Vector3d x_W = R_WB * Eigen::Vector3d::UnitX();   // 机头
+        x_W -= (x_W.dot(z_W)) * z_W;                              // 投影到水平面
+        if (x_W.norm() < 1e-6) {
+            Eigen::Vector3d y_B = R_WB * Eigen::Vector3d::UnitY();
+            x_W = y_B - (y_B.dot(z_W)) * z_W;
+        }
+        x_W.normalize();
+        Eigen::Vector3d y_W = z_W.cross(x_W);                     // 左
+        R_WM_.col(0) = x_W;
+        R_WM_.col(1) = y_W;
+        R_WM_.col(2) = z_W;
+    }
+
+    double planDuration(double dist) const
+    {
+        if (duration_mode_ == "fixed" && fixed_duration_ > 0.0)
+            return fixed_duration_;
+        double T = (cruise_speed_ > 1e-6) ? dist / cruise_speed_ : dist;
+        return std::max(T_min_, std::min(T_max_, T));
     }
 
     // ---- 降落：保持 RTH，检测着陆后上锁 ----
@@ -345,6 +637,8 @@ private:
         integral_   = 0.0;
         prev_error_ = 0.0;
         landed_since_ = ros::Time(0);
+        ch6_mid_since_ = ros::Time(0);
+        arrived_since_ = ros::Time(0);
     }
 
     void setChannel(int index, int value)
@@ -371,7 +665,33 @@ private:
     double   hover_reach_hold_time_;
     double   kp_, ki_, kd_;
     double   hover_reach_threshold_;
-    int      hover_ch3_, hover_ch6_;
     ros::Time landed_since_;
     ros::Time reached_since_;
+
+    // ---- 轨迹跟踪（最小 snap）成员 ----
+    std::string feedback_mode_;
+    Eigen::Vector3d target_;
+    std::string duration_mode_;
+    double fixed_duration_;
+    double cruise_speed_, T_min_, T_max_;
+    double arrive_tol_, vel_tol_, arrive_hold_;
+    double danger_tol_, timeout_traj_, odom_stale_timeout_;
+    int    ch6_mid_low_, ch6_mid_high_;
+    double ch6_debounce_;
+    bool   gimbal_lock_;
+    ros::Time traj_start_time_;
+    ros::Time ch6_mid_since_;
+    ros::Time arrived_since_;
+
+    std::string height_source_;
+    double h0_;
+    double hover_hold_before_traj_;
+    int    override_threshold_;
+    Eigen::Vector3d hover_target_;
+    ros::Time hover_entered_since_;
+
+    trajectory::CtrlParams ctrl_params_;
+    trajectory::MinSnapTrajectory traj_;
+    Eigen::Vector3d p0_W_ = Eigen::Vector3d::Zero();
+    Eigen::Matrix3d R_WM_ = Eigen::Matrix3d::Identity();
 };

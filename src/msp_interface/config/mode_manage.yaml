@@ -6,6 +6,7 @@ max_channels: 16             # 通道数
 remote_timeout: 0.1          # 遥控超时 (s)
 control_timeout: 0.1         # 控制数据超时 (s)
 gimbal_angle_range: 45.0     # 云台角度范围 (deg)
+override_threshold: 10        # 手动接管阈值：自动模式下姿态(CH1/CH2/CH4)/云台(CH9/CH10)偏离中立(1500)超过该值即交还遥控
 
 # ===== Rosbag 录制参数 =====
 # 保存目录

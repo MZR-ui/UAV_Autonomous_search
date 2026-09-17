@@ -4,7 +4,7 @@
 #support: 1 imu 1 cam; 1 imu 2 cam: 2 cam;
 # NOTE: 根因是标定 + 红外投射器（非 IMU 硬件损伤），已在 realsense.launch 关闭 emitter。
 #       已切回双目 + IMU（imu: 1）。
-imu: 1
+imu: 0
 num_of_cam: 2
 
 imu_topic: "/camera/imu"

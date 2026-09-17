@@ -11,11 +11,13 @@
   <build_depend>msp_interface</build_depend>
   <build_depend>remote_info</build_depend>
   <build_depend>sensor_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
   <build_depend>behaviortree_cpp</build_depend>
   <build_export_depend>behaviortree_cpp</build_export_depend>
   <exec_depend>roscpp</exec_depend>
   <exec_depend>msp_interface</exec_depend>
   <exec_depend>remote_info</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
   <exec_depend>behaviortree_cpp</exec_depend>
 </package>

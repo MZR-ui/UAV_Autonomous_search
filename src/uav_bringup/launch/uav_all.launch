@@ -25,6 +25,9 @@
     
     <include file="$(find sensing)/launch/realsense.launch"/>
 
+    <!-- VINS-Fusion 双目视觉定位（依赖 realsense 提供的 /camera/infra1|2） -->
+    <include file="$(find vins)/launch/vins_d435i.launch"/>
+
     <!-- 如果需要节点间话题重映射，可以在此直接启动节点并 remap，但通常在各子 launch 中处理更合适。
          若全局需统一话题名称，也可在 include 后使用 remap 标签（需放在 node 标签内）。此处不添加示例。
     -->
