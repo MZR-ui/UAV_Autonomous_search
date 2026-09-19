@@ -23,16 +23,18 @@ kd: 8.0        # 微分：抑制超调（接近目标时按爬升速度主动收
 
 # ================= 轨迹跟踪（最小 Snap）=================
 # 触发：悬停态下遥控 CH6 拨到中档（ch6_mid_low~ch6_mid_high 之间）持续 ch6_debounce 秒
-# 坐标系：触发瞬间 VINS 输出为原点，飞控姿态定重力方向（任务系 M，x=机头水平投影）
+# 坐标系：起飞点机头系——原点=解锁起飞瞬间的 VINS 位置，x=起飞时机头水平投影，z=离地/相对起飞点高度
 feedback_mode: "closed_loop"   # closed_loop=闭环（VINS 反馈+控制器）；open_loop=开环（纯前馈看效果）
+target_mode: "relative"        # 目标语义：relative=每次相对当前点飞 target 增量 / absolute=固定绝对点（起飞点机头系）
+trigger_source: "ch6"          # 触发源：ch6=遥控 CH6 上升沿 / topic=/traj_trigger 话题（std_msgs/Empty）
 gimbal_lock: true              # 轨迹期间锁定云台（true=不发送云台指令）
-height_source: "rangefinder"   # 垂直定高数据源：rangefinder=飞控测距 / barometer=飞控气压 / vins=VINS z
+height_source: "rangefinder"   # 垂直定高数据源：rangefinder=飞控测距(离地) / barometer=飞控气压(相对home) / vins=VINS z(相对起飞点)
 hover_hold_before_traj: 5.0    # 轨迹前上位机悬停稳定时长 (s)，期间 CH6 中档才被接受
 
 # ---- 轨迹目标与时间 ----
-target_x: 2.0                  # 目标点 x (m，任务系，机头水平方向)
-target_y: 0.0                  # 目标点 y (m，任务系，左)
-target_z: 1.0                  # 目标点 z (m，任务系，上)
+target_x: 2.0                  # target_mode=relative 时：每次相对当前点前向增量 (m)；absolute 时：绝对点 x
+target_y: 0.0                  # 相对增量/绝对点 y（左为正）
+target_z: 1.0                  # 相对增量/绝对点 z（relative=每次再升高量；absolute=离地高度）
 duration_mode: "auto"          # auto=按 cruise_speed 估时长；fixed=用 fixed_duration
 fixed_duration: 0.0            # duration_mode=fixed 时的固定轨迹时长 (s)，0=忽略
 cruise_speed: 0.5              # auto 模式巡航速度 (m/s)，时长=dist/speed 后夹在 [T_min,T_max]
@@ -42,16 +44,30 @@ T_max: 8.0                     # auto 模式最大时长 (s)
 # ---- 位置控制器（差分平坦）----
 kp_xy: 1.0                     # 水平位置比例增益 (1/s²)
 kp_z: 2.0                      # 垂向位置比例增益
-kd_xy: 0.5                     # 水平速度微分增益 (1/s)
-kd_z: 0.8                      # 垂向速度微分增益
+kd_xy: 1.4                     # 水平速度微分增益 (1/s)，ζ≈0.7（配 kp_xy=1.0；原 0.5 因无速度反馈未生效）
+kd_z: 2.0                      # 垂向速度微分增益，ζ≈0.7（配 kp_z=2.0；原 0.8）
 gravity: 9.81                  # 重力加速度 (m/s²)
 angle_max: 0.35                # 最大倾角 (rad)，映射到 ±500 PWM
 hover_throttle: 1420.0         # ANGLE 悬停油门 PWM（实测标定）
 k_thr: 30.0                    # 油门推力→PWM 增益 (PWM/(m/s²))
-pitch_sign: -1.0               # 俯仰角→PWM 符号（前倾为正位移）
-roll_sign: 1.0                 # 横滚角→PWM 符号
+out_slew_max: 1000.0           # 输出变化率限幅 (PWM/s)：限制 hover/trajectory 每通道 PWM 变化速率，防单拍野值/大误差阶跃；0=不限幅
+pitch_sign: 1.0                # 俯仰角→PWM 符号：正向=低头(CH2>1500)。标准 INAV CH2>1500=低头，故 +1；首飞前地面验证方向！
+roll_sign: 1.0                 # 横滚角→PWM 符号：正向=右滚(CH1>1500)。标准 INAV CH1>1500=右滚
 yaw_enabled: false             # 是否启航向控制（当前保持 CH4 中立）
 yaw_kp: 0.0                    # 航向比例增益
+
+# ---- 速度估计器（一阶互补：飞控加速度计积分 + 位置源去漂移）----
+vel_est_enabled: true          # 速度环总开关（false=回退旧行为 v_M=0）
+vel_est_alpha_z: 0.98          # Z 一阶互补权重（IMU 占比，越大越靠 IMU、去漂越慢）
+vel_est_alpha_xy: 0.95         # XY 一阶互补权重（IMU 占比；VINS 位置差分做慢通道去漂）
+vel_est_gravity: 9.80665       # 重力加速度幅值 (m/s²)，用于加速度计去重力
+
+# ---- 悬停安全限幅 ----
+hover_danger_tol: 0.5          # 悬停位置跟踪误差超限阈值 (m)
+hover_danger_hold: 0.3         # 越界持续时长 (s)，防测距噪声误触发
+hover_max_height: 1.5          # 绝对高度上限 (m)，测距仪，越界即安全动作
+hover_min_height: 0.3          # 绝对高度下限 (m)
+hover_safety_action: "landing" # 越界动作：landing=CH7 RTH 自动降落 / abort=上锁
 
 # ---- 到达 / 安全 / 触发 ----
 arrive_tol: 0.1                # 到达判定：位置误差阈值 (m)

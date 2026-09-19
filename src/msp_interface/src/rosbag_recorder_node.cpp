@@ -8,6 +8,8 @@
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <geometry_msgs/Point.h>
+#include <nav_msgs/Odometry.h>
+#include <nav_msgs/Path.h>
 #include <std_msgs/UInt32MultiArray.h>
 #include "msp_interface/MspChannel.h"
 #include "msp_interface/EscTelem.h"
@@ -66,6 +68,14 @@ public:
             boost::bind(&RosbagRecorderNode::recordToBag<msp_interface::Attitude>, this, "/msp/attitude", _1));
         ch_sub_       = nh_.subscribe<msp_interface::MspChannel>("/msp_channel", 100,
             boost::bind(&RosbagRecorderNode::recordToBag<msp_interface::MspChannel>, this, "/msp_channel", _1));
+
+        // VINS 位姿/路径 + Jetson 控制指令（轨迹分析用）
+        vins_odom_sub_ = nh_.subscribe<nav_msgs::Odometry>("/vins_estimator/odometry", 100,
+            boost::bind(&RosbagRecorderNode::recordToBag<nav_msgs::Odometry>, this, "/vins_estimator/odometry", _1));
+        vins_path_sub_ = nh_.subscribe<nav_msgs::Path>("/vins_estimator/path", 10,
+            boost::bind(&RosbagRecorderNode::recordToBag<nav_msgs::Path>, this, "/vins_estimator/path", _1));
+        control_sub_   = nh_.subscribe<msp_interface::MspChannel>("/control_data", 100,
+            boost::bind(&RosbagRecorderNode::recordToBag<msp_interface::MspChannel>, this, "/control_data", _1));
 
         // RealSense 订阅（可选）
         if (record_realsense_) {
@@ -258,6 +268,7 @@ private:
     ros::NodeHandle nh_, nh_priv_;
     ros::Subscriber remote_sub_, imu_sub_, alt_sub_, range_sub_, gps_sub_, motor_sub_;
     ros::Subscriber status_sub_, battery_sub_, esc_sub_, attitude_sub_, ch_sub_;
+    ros::Subscriber vins_odom_sub_, vins_path_sub_, control_sub_;
     ros::Subscriber sub_color_img_, sub_color_info_, sub_depth_img_, sub_depth_info_;
     ros::Subscriber sub_aligned_img_, sub_aligned_info_, sub_cam_imu_;
     ros::Subscriber sub_infra1_img_, sub_infra2_img_;

@@ -65,6 +65,7 @@ class Estimator
     void optimization();
     void vector2double();
     void double2vector();
+    void alignWorldFrame();
     bool failureDetection();
     bool getIMUInterval(double t0, double t1, vector<pair<double, Eigen::Vector3d>> &accVector, 
                                               vector<pair<double, Eigen::Vector3d>> &gyrVector);

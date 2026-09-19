@@ -371,6 +371,25 @@ void Estimator::initFirstPose(Eigen::Vector3d p, Eigen::Matrix3d r)
     initR = r;
 }
 
+void Estimator::alignWorldFrame()
+{
+    // 纯双目:把初始化得到的 world 系(第 0 帧相机系:光轴 +Z 朝前、+Y 朝下)旋转到
+    // 期望朝向(前进朝 +X、+Z 向上)。
+    // 步骤:先绕 X 转 -90°(把"上"翻到 +Z,此时前进落到 +Y),再绕 Z 转 -90°(把前进从 +Y 转到 +X)。
+    // 仅用于纯双目(无 IMU)。IMU 分支的 world 系已由 VisualIMUAlignment 对齐重力,勿套用此变换。
+    const double kHalfPi = 1.5707963267948966;
+
+    Eigen::Matrix3d R_align =
+        Eigen::AngleAxisd(-kHalfPi, Eigen::Vector3d::UnitZ()).toRotationMatrix() *
+        Eigen::AngleAxisd(-kHalfPi, Eigen::Vector3d::UnitX()).toRotationMatrix();
+
+    for (int i = 0; i <= WINDOW_SIZE; i++)
+    {
+        Ps[i] = R_align * Ps[i];
+        Rs[i] = R_align * Rs[i];
+        Vs[i] = R_align * Vs[i];
+    }
+}
 
 void Estimator::processIMU(double t, double dt, const Vector3d &linear_acceleration, const Vector3d &angular_velocity)
 {
@@ -515,6 +534,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
             if(frame_count == WINDOW_SIZE)
             {
                 optimization();
+                alignWorldFrame();
                 updateLatestStates();
                 solver_flag = NON_LINEAR;
                 slideWindow();

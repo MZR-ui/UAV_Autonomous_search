@@ -44,6 +44,8 @@ int main(int argc, char** argv)
 
     // ---- 轨迹跟踪参数 ----
     std::string feedback_mode = "closed_loop";
+    std::string target_mode = "relative";
+    std::string trigger_source = "ch6";
     double target_x = 2.0, target_y = 0.0, target_z = 1.0;
     std::string duration_mode = "auto";
     double fixed_duration = 0.0;
@@ -56,14 +58,24 @@ int main(int argc, char** argv)
     std::string height_source = "rangefinder";
     double hover_hold_before_traj = 5.0;
     int override_threshold = 10;
-    double kp_xy = 1.0, kp_z = 2.0, kd_xy = 0.5, kd_z = 0.8;
+    double kp_xy = 1.0, kp_z = 2.0, kd_xy = 1.4, kd_z = 2.0;
     double gravity = 9.81, angle_max = 0.35;
     double hover_throttle = 1420.0, k_thr = 30.0;
-    double pitch_sign = -1.0, roll_sign = 1.0;
+    double pitch_sign = 1.0, roll_sign = 1.0;
+    double out_slew_max = 1000.0;
     bool yaw_enabled = false;
     double yaw_kp = 0.0;
 
+    // ---- 悬停安全限幅 ----
+    double hover_danger_tol = 0.5;
+    double hover_danger_hold = 0.3;
+    double hover_max_height = 1.5;
+    double hover_min_height = 0.3;
+    std::string hover_safety_action = "landing";
+
     nh_priv.param<std::string>("feedback_mode", feedback_mode, "closed_loop");
+    nh_priv.param<std::string>("target_mode", target_mode, "relative");
+    nh_priv.param<std::string>("trigger_source", trigger_source, "ch6");
     nh_priv.param<double>("target_x", target_x, 2.0);
     nh_priv.param<double>("target_y", target_y, 0.0);
     nh_priv.param<double>("target_z", target_z, 1.0);
@@ -87,19 +99,26 @@ int main(int argc, char** argv)
     nh_priv.param<int>("override_threshold", override_threshold, 10);
     nh_priv.param<double>("kp_xy", kp_xy, 1.0);
     nh_priv.param<double>("kp_z", kp_z, 2.0);
-    nh_priv.param<double>("kd_xy", kd_xy, 0.5);
-    nh_priv.param<double>("kd_z", kd_z, 0.8);
+    nh_priv.param<double>("kd_xy", kd_xy, 1.4);
+    nh_priv.param<double>("kd_z", kd_z, 2.0);
     nh_priv.param<double>("gravity", gravity, 9.81);
     nh_priv.param<double>("angle_max", angle_max, 0.35);
     nh_priv.param<double>("hover_throttle", hover_throttle, 1420.0);
     nh_priv.param<double>("k_thr", k_thr, 30.0);
-    nh_priv.param<double>("pitch_sign", pitch_sign, -1.0);
+    nh_priv.param<double>("pitch_sign", pitch_sign, 1.0);
     nh_priv.param<double>("roll_sign", roll_sign, 1.0);
+    nh_priv.param<double>("out_slew_max", out_slew_max, 1000.0);
     nh_priv.param<bool>("yaw_enabled", yaw_enabled, false);
     nh_priv.param<double>("yaw_kp", yaw_kp, 0.0);
 
-    // 初始化 Backend
-    RosBackend::instance().init(nh);
+    nh_priv.param<double>("hover_danger_tol", hover_danger_tol, 0.5);
+    nh_priv.param<double>("hover_danger_hold", hover_danger_hold, 0.3);
+    nh_priv.param<double>("hover_max_height", hover_max_height, 1.5);
+    nh_priv.param<double>("hover_min_height", hover_min_height, 0.3);
+    nh_priv.param<std::string>("hover_safety_action", hover_safety_action, "landing");
+
+    // 初始化 Backend（nh_priv 读速度估计器参数 vel_est_*）
+    RosBackend::instance().init(nh, nh_priv);
     ROS_INFO("BT Server: backend initialized");
 
     // 创建 BehaviorTreeFactory，注册所有节点
@@ -141,6 +160,8 @@ int main(int argc, char** argv)
 
     // ---- 轨迹跟踪参数 ----
     tree.rootBlackboard()->set("feedback_mode", feedback_mode);
+    tree.rootBlackboard()->set("target_mode", target_mode);
+    tree.rootBlackboard()->set("trigger_source", trigger_source);
     tree.rootBlackboard()->set("target_x", target_x);
     tree.rootBlackboard()->set("target_y", target_y);
     tree.rootBlackboard()->set("target_z", target_z);
@@ -172,8 +193,14 @@ int main(int argc, char** argv)
     tree.rootBlackboard()->set("k_thr", k_thr);
     tree.rootBlackboard()->set("pitch_sign", pitch_sign);
     tree.rootBlackboard()->set("roll_sign", roll_sign);
+    tree.rootBlackboard()->set("out_slew_max", out_slew_max);
     tree.rootBlackboard()->set("yaw_enabled", yaw_enabled);
     tree.rootBlackboard()->set("yaw_kp", yaw_kp);
+    tree.rootBlackboard()->set("hover_danger_tol", hover_danger_tol);
+    tree.rootBlackboard()->set("hover_danger_hold", hover_danger_hold);
+    tree.rootBlackboard()->set("hover_max_height", hover_max_height);
+    tree.rootBlackboard()->set("hover_min_height", hover_min_height);
+    tree.rootBlackboard()->set("hover_safety_action", hover_safety_action);
     std::vector<uint16_t> channels(16, 1500);
     channels[0] = 1500;  // CH1 roll 中立
     channels[1] = 1500;  // CH2 pitch 中立

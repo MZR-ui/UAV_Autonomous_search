@@ -12,14 +12,14 @@ struct CtrlParams
     bool   lateral_enabled = true;       // 水平闭环开关（false=仅垂直，手动接管让位用）
     double kp_xy = 1.0;                  // 水平位置 P (1/s²)
     double kp_z  = 2.0;                  // 垂直位置 P
-    double kd_xy = 0.0;                  // 水平速度 D（无 IMU 速度噪，默认 0）
-    double kd_z  = 0.0;
+    double kd_xy = 0.5;                  // 水平速度 D（无 IMU 速度噪，先温和 0.5；抖就回 0）
+    double kd_z  = 0.8;                  // 垂直速度 D（rangefinder/barometer 源 v_M.z 被置 0，此项实际只吃参考速度前馈）
     double gravity = 9.81;               // 重力 (m/s²)
-    double angle_max = 0.26;             // ANGLE 满量程倾角 (rad ≈ 15°)
-    double hover_throttle = 1500.0;      // 悬停油门 PWM（待标定）
-    double k_thr = 100.0;                // 推力→油门斜率 PWM/(m/s²)（待标定）
-    double pitch_sign = -1.0;            // 角度→PWM 方向（待实测确认，可翻转）
-    double roll_sign  = +1.0;
+    double angle_max = 0.35;             // ANGLE 满量程倾角 (rad ≈ 20°)，须与 INAV max_angle_inclination 对齐
+    double hover_throttle = 1420.0;      // 悬停油门 PWM（实测标定，随电压漂移）
+    double k_thr = 30.0;                 // 推力→油门斜率 PWM/(m/s²)（实测标定）
+    double pitch_sign = +1.0;            // 俯仰角→PWM 符号（标准 INAV：CH2>1500=低头；正向=低头。首飞前地面验证，可翻转）
+    double roll_sign  = +1.0;            // 横滚角→PWM 符号（标准 INAV：CH1>1500=右滚）
     bool   yaw_enabled = false;          // 是否启用航向保持
     double yaw_kp = 0.0;                 // 航向 P（PWM/rad）
     int    pwm_min = 1000;
