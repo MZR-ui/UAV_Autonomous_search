@@ -186,15 +186,17 @@ void RosBackend::setTaskFrame(const Eigen::Matrix3d& R_WM, const Eigen::Vector3d
 }
 
 // 飞控机体系(FRD: x前/y右/z下) → 世界系(ENU: x北/y东/z上)。
-// INAV roll/pitch/yaw(rad) → earth(NED)→body(FRD) 旋转矩阵 R_ned，再 NED→ENU 翻转。
-// 方向需装机前地面倾斜验证（静止放平/前倾/左倾 → a_lin≈0）。
+// R_ned 为标准 body(FRD)→earth(NED) 旋转矩阵（INAV roll/pitch/yaw 约定），
+// 机体系→ENU = D·R_ned（D = NED→ENU 翻 y/z）。
+// 修正：此前误乘 R_ned.transpose()，静止倾斜时重力补偿残留水平分量；
+//       去掉转置后，静止任意姿态 a_lin = g_world − D·R_ned·a_body ≡ 0（已数值验证）。
 Eigen::Matrix3d RosBackend::buildRenuBody(double roll, double pitch, double yaw) const
 {
     double cr = std::cos(roll),  sr = std::sin(roll);
     double cp = std::cos(pitch), sp = std::sin(pitch);
     double cy = std::cos(yaw),   sy = std::sin(yaw);
 
-    Eigen::Matrix3d R_ned;   // earth(NED) → body(FRD)
+    Eigen::Matrix3d R_ned;   // body(FRD) → earth(NED)
     R_ned << cy*cp,  cy*sp*sr - sy*cr,  cy*sp*cr + sy*sr,
              sy*cp,  sy*sp*sr + cy*cr,  sy*sp*cr - cy*sr,
              -sp,    cp*sr,             cp*cr;
@@ -204,7 +206,7 @@ Eigen::Matrix3d RosBackend::buildRenuBody(double roll, double pitch, double yaw)
          0.0,-1.0, 0.0,
          0.0, 0.0,-1.0;
 
-    return D * R_ned.transpose();   // body(FRD) → earth(ENU)
+    return D * R_ned;   // body(FRD) → earth(ENU)
 }
 
 void RosBackend::triggerCb(const std_msgs::Empty::ConstPtr&)

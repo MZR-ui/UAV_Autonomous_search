@@ -42,6 +42,16 @@ int main(int argc, char** argv)
     nh_priv.param<double>("kd", kd, 0.0);
     nh_priv.param<double>("hover_reach_threshold", hover_reach_threshold, 0.9);
 
+    // ---- 起转 + 起飞（rest-to-rest snap）参数 ----
+    double spool_duration = 2.0, spool_peak_ratio = 0.90, spool_throttle_min = 1000.0;
+    double takeoff_duration = 3.0;
+    bool takeoff_lateral = false;
+    nh_priv.param<double>("spool_duration", spool_duration, 2.0);
+    nh_priv.param<double>("spool_peak_ratio", spool_peak_ratio, 0.90);
+    nh_priv.param<double>("spool_throttle_min", spool_throttle_min, 1000.0);
+    nh_priv.param<double>("takeoff_duration", takeoff_duration, 3.0);
+    nh_priv.param<bool>("takeoff_lateral", takeoff_lateral, false);
+
     // ---- 轨迹跟踪参数 ----
     std::string feedback_mode = "closed_loop";
     std::string target_mode = "relative";
@@ -157,6 +167,13 @@ int main(int argc, char** argv)
     tree.rootBlackboard()->set("ki", ki);
     tree.rootBlackboard()->set("kd", kd);
     tree.rootBlackboard()->set("hover_reach_threshold", hover_reach_threshold);
+
+    // ---- 起转 + 起飞（rest-to-rest snap）参数 ----
+    tree.rootBlackboard()->set("spool_duration", spool_duration);
+    tree.rootBlackboard()->set("spool_peak_ratio", spool_peak_ratio);
+    tree.rootBlackboard()->set("spool_throttle_min", spool_throttle_min);
+    tree.rootBlackboard()->set("takeoff_duration", takeoff_duration);
+    tree.rootBlackboard()->set("takeoff_lateral", takeoff_lateral);
 
     // ---- 轨迹跟踪参数 ----
     tree.rootBlackboard()->set("feedback_mode", feedback_mode);

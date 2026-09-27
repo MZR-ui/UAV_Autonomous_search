@@ -8,6 +8,7 @@
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <geometry_msgs/Point.h>
+#include <geometry_msgs/Vector3Stamped.h>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <std_msgs/UInt32MultiArray.h>
@@ -76,6 +77,12 @@ public:
             boost::bind(&RosbagRecorderNode::recordToBag<nav_msgs::Path>, this, "/vins_estimator/path", _1));
         control_sub_   = nh_.subscribe<msp_interface::MspChannel>("/control_data", 100,
             boost::bind(&RosbagRecorderNode::recordToBag<msp_interface::MspChannel>, this, "/control_data", _1));
+
+        // bt_engine 调试话题（重力补偿线加速度 + 速度估计，悬停/轨迹调试用）
+        accel_lin_sub_ = nh_.subscribe<geometry_msgs::Vector3Stamped>("/bt_engine/accel_lin", 100,
+            boost::bind(&RosbagRecorderNode::recordToBag<geometry_msgs::Vector3Stamped>, this, "/bt_engine/accel_lin", _1));
+        vel_est_sub_   = nh_.subscribe<geometry_msgs::Vector3Stamped>("/bt_engine/vel_est", 100,
+            boost::bind(&RosbagRecorderNode::recordToBag<geometry_msgs::Vector3Stamped>, this, "/bt_engine/vel_est", _1));
 
         // RealSense 订阅（可选）
         if (record_realsense_) {
@@ -269,6 +276,7 @@ private:
     ros::Subscriber remote_sub_, imu_sub_, alt_sub_, range_sub_, gps_sub_, motor_sub_;
     ros::Subscriber status_sub_, battery_sub_, esc_sub_, attitude_sub_, ch_sub_;
     ros::Subscriber vins_odom_sub_, vins_path_sub_, control_sub_;
+    ros::Subscriber accel_lin_sub_, vel_est_sub_;
     ros::Subscriber sub_color_img_, sub_color_info_, sub_depth_img_, sub_depth_info_;
     ros::Subscriber sub_aligned_img_, sub_aligned_info_, sub_cam_imu_;
     ros::Subscriber sub_infra1_img_, sub_infra2_img_;

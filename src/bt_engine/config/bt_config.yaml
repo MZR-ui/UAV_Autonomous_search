@@ -13,13 +13,21 @@ enable_height_monitor: false    # 高度偏差 DANGER 监测（拆桨测试时 f
 landing_height_threshold: 0.1   # 着陆判定：测距高度阈值 (m)
 landing_hold_time: 2.0          # 着陆判定：持续时长 (s)
 hover_reach_hold_time: 0.0      # 提前到高度悬停：达标持续确认时长 (s)，0=一达标立即切悬停，靠惯性到位
-hover_reach_threshold: 0.85      # 提前到高度悬停：触发高度阈值 (m)，z≥该值即切悬停（原 1.0-0.1=0.9；想减超调可降到 0.8 提前切）
+hover_reach_threshold: 0.75       # 提前到高度悬停：触发高度阈值 (m)，z≥该值即切悬停（首飞再保守：0.85→0.7，悬停更低、离顶更远）
 
 # 起飞 PID 修正参数（对轨迹油门的小幅反馈修正）
 # 实测 Kp=200 会把轨迹油门 1420 推到 ~1470，导致爬升速度过快、超调 0.22m → 降到 80
 kp: 80.0       # 比例：误差(m) → PWM 油门修正（前馈轨迹是主力，PID 只做小幅修正）
 ki: 10.0       # 积分：消除稳态误差（按 0.02s/tick 累积，作用弱）
 kd: 8.0        # 微分：抑制超调（接近目标时按爬升速度主动收油门；测距噪声大就降到 2~3）
+# 注：kp/ki/kd 为旧 CSV 起飞 PID，起转+snap 改造后已停用（保留定义，待清理）
+
+# ================= 起转 + 起飞（rest-to-rest snap）=================
+spool_duration: 2.0          # 起转油门 S 曲线 ramp 时长 (s)
+spool_peak_ratio: 0.90       # 起转峰值 = spool_throttle_min + (hover_throttle−spool_throttle_min)×该比例（<1 保证不起飞；电池漂移实测离地则降 0.85）
+spool_throttle_min: 1000     # 起转起始油门 PWM（怠速）
+takeoff_duration: 3.0        # 起飞 rest-to-rest snap 时长 (s)，1m/3s 峰值 a_z≈0.84 m/s² << g
+takeoff_lateral: false       # 起飞期是否开水平环（首飞 false=仅垂直，跑稳后再开）
 
 # ================= 轨迹跟踪（最小 Snap）=================
 # 触发：悬停态下遥控 CH6 拨到中档（ch6_mid_low~ch6_mid_high 之间）持续 ch6_debounce 秒
@@ -43,11 +51,11 @@ T_max: 8.0                     # auto 模式最大时长 (s)
 
 # ---- 位置控制器（差分平坦）----
 kp_xy: 1.0                     # 水平位置比例增益 (1/s²)
-kp_z: 2.0                      # 垂向位置比例增益
+kp_z: 1.5                      # 垂向位置比例增益（首飞再保守：2.0→1.5，爬升更温和）
 kd_xy: 1.4                     # 水平速度微分增益 (1/s)，ζ≈0.7（配 kp_xy=1.0；原 0.5 因无速度反馈未生效）
-kd_z: 2.0                      # 垂向速度微分增益，ζ≈0.7（配 kp_z=2.0；原 0.8）
+kd_z: 1.7                      # 垂向速度微分增益，ζ≈0.7（配 kp_z=1.5；原 2.0）
 gravity: 9.81                  # 重力加速度 (m/s²)
-angle_max: 0.35                # 最大倾角 (rad)，映射到 ±500 PWM
+angle_max: 0.25                # 最大倾角 (rad)，映射到 ±500 PWM（首飞收紧：0.35→0.25，限制失控幅度）
 hover_throttle: 1420.0         # ANGLE 悬停油门 PWM（实测标定）
 k_thr: 30.0                    # 油门推力→PWM 增益 (PWM/(m/s²))
 out_slew_max: 1000.0           # 输出变化率限幅 (PWM/s)：限制 hover/trajectory 每通道 PWM 变化速率，防单拍野值/大误差阶跃；0=不限幅
@@ -63,9 +71,9 @@ vel_est_alpha_xy: 0.95         # XY 一阶互补权重（IMU 占比；VINS 位�
 vel_est_gravity: 9.80665       # 重力加速度幅值 (m/s²)，用于加速度计去重力
 
 # ---- 悬停安全限幅 ----
-hover_danger_tol: 0.5          # 悬停位置跟踪误差超限阈值 (m)
+hover_danger_tol: 0.4          # 悬停位置跟踪误差超限阈值 (m)（首飞收紧：0.5→0.4，更早触发兜底）
 hover_danger_hold: 0.3         # 越界持续时长 (s)，防测距噪声误触发
-hover_max_height: 1.5          # 绝对高度上限 (m)，测距仪，越界即安全动作
+hover_max_height: 1.2          # 绝对高度上限 (m)，测距仪，越界即安全动作（首飞再收紧：1.2→1.0，悬停目标≈0.7）
 hover_min_height: 0.3          # 绝对高度下限 (m)
 hover_safety_action: "landing" # 越界动作：landing=CH7 RTH 自动降落 / abort=上锁
 

@@ -16,8 +16,9 @@
  *
  * 进自动模式即常驻（onStart 返回 RUNNING 进入 IDLE），自行拥有 CH5 的全部语义：
  *   IDLE       未解锁时什么都不写（等 arm_action）；已解锁写怠速通道；
- *              检测 CH5 上升沿(>1750) 且锁存已清 → 建立任务系(起飞点机头系) → TAKEOFF
- *   TAKEOFF    起飞轨迹 csv 开环姿态(roll/pitch/yaw) + 油门 PID 定高修正；CH5 拨低 / 超时 / DANGER → abort()（上锁+回 IDLE）
+ *              检测 CH5 上升沿(>1750) 且锁存已清 → 建立任务系(起飞点机头系) → SPOOL_UP
+ *   SPOOL_UP   开环油门 S 曲线 ramp 到悬停值以下（电机起转但不起飞）；时长跑满 → TAKEOFF；CH5 拨低 → abort()
+ *   TAKEOFF    rest-to-rest snap 垂直段 + 统一位置控制器；到达悬停高度(v≈0) → HOVER；CH5 拨低/超时 → LANDING
  *   HOVER      上位机 ANGLE 定高定点（水平 VINS 闭环 + 垂直高度源闭环，CH6 恒 1000=ANGLE）；
  *              触发边沿（CH6 上升沿 或 /traj_trigger 话题，按 trigger_source）→ 去抖+悬停稳定
  *              → TRAJECTORY；CH5 拨低 → LANDING
@@ -25,7 +26,7 @@
  *              超时 / 位置误差超限 / VINS 失效 → abort()；飞行中 CH6 状态不影响轨迹
  *   LANDING    写 CH7=2000（RTH，无 GPS 时飞控自动降落）；检测着陆 → abort()（上锁+回 IDLE）
  *
- * 控制器分两套：起飞=csv 开环姿态 + 油门经典 PID(带 I)；悬停/轨迹=PositionController(差分平坦 PD)。
+ * 控制器统一：起转=开环油门 ramp（唯一例外）；起飞/悬停/轨迹=PositionController(差分平坦 PD)。
  * 控制循环频率 = tick_rate（默认 100Hz，见 bt_config.yaml），悬停/轨迹输出经 out_slew_max 变化率限幅。
  * 悬停提前切出：z ≥ hover_reach_threshold(默认 0.9m) 持续 hold 时间即切悬停（跳过轨迹剩余段）。
  *
@@ -92,6 +93,13 @@ public:
         bb->get("kd", kd_);
         bb->get("hover_reach_threshold", hover_reach_threshold_);
 
+        // ---- 起转 + 起飞（rest-to-rest snap）参数 ----
+        bb->get("spool_duration", spool_duration_);
+        bb->get("spool_peak_ratio", spool_peak_ratio_);
+        bb->get("spool_throttle_min", spool_throttle_min_);
+        bb->get("takeoff_duration", takeoff_duration_);
+        bb->get("takeoff_lateral", takeoff_lateral_);
+
         // ---- 轨迹跟踪参数 ----
         bb->get("feedback_mode", feedback_mode_);
         bb->get("target_mode", target_mode_);
@@ -147,13 +155,9 @@ public:
         std::string traj_path = skills_dir + "/" + skill_name + "/trajectory.csv";
         std::string meta_path = skills_dir + "/" + skill_name + "/meta.yaml";
 
-        trajectory_ = SkillLoader::loadTrajectory(traj_path);
         meta_       = SkillLoader::loadMeta(meta_path);
-
-        if (trajectory_.empty()) {
-            ROS_ERROR("SkillExecutor: empty trajectory for %s", skill_name.c_str());
-            return BT::NodeStatus::FAILURE;
-        }
+        // 起飞已改 rest-to-rest snap，不再使用 CSV 轨迹；保留加载能力，空轨迹不再 FAILURE
+        trajectory_ = SkillLoader::loadTrajectory(traj_path);
 
         traj_index_   = 0;
         start_time_   = ros::Time(0);
@@ -200,11 +204,12 @@ public:
         }
 
         switch (state_) {
-            case State::IDLE:    return runIdle(ch5_high, ch5_low, flags);
-            case State::TAKEOFF: return runTakeoff(ch5_high, current_z);
-            case State::HOVER:   return runHover(ch5_low, trigger_rising, override_active, current_z);
+            case State::IDLE:      return runIdle(ch5_high, ch5_low, flags);
+            case State::SPOOL_UP:  return runSpoolUp(ch5_high);
+            case State::TAKEOFF:   return runTakeoff(ch5_high);
+            case State::HOVER:     return runHover(ch5_low, trigger_rising, override_active, current_z);
             case State::TRAJECTORY: return runTrajectory(ch5_low, override_active);
-            case State::LANDING: return runLanding(current_z, flags);
+            case State::LANDING:   return runLanding(current_z, flags);
         }
         return BT::NodeStatus::RUNNING;
     }
@@ -216,7 +221,7 @@ public:
     }
 
 private:
-    enum class State { IDLE, TAKEOFF, HOVER, TRAJECTORY, LANDING };
+    enum class State { IDLE, SPOOL_UP, TAKEOFF, HOVER, TRAJECTORY, LANDING };
 
     // ---- 待命：等解锁 + CH5 上升沿 ----
     BT::NodeStatus runIdle(bool ch5_high, bool ch5_low, uint32_t flags)
@@ -241,113 +246,125 @@ private:
         setChannel(5, 1000);
         setChannel(6, 1000);
 
-        // CH5 上升沿（锁存已清）→ 起飞
+        // CH5 上升沿（锁存已清）→ 起转
         if (ch5_high && !latch) {
-            ROS_INFO("SkillExecutor: CH5 上升沿 → 起飞");
+            ROS_INFO("SkillExecutor: CH5 上升沿 → 起转 (spool-up)");
             establishTaskFrame();   // 记录起飞点原点 + 起飞时机头朝向
-            state_      = State::TAKEOFF;
-            start_time_ = ros::Time::now();
-            traj_index_ = 0;
-            integral_   = 0.0;
-            prev_error_ = 0.0;
-            reached_since_ = ros::Time(0);
+            state_            = State::SPOOL_UP;
+            spool_start_time_ = ros::Time::now();
         }
         return BT::NodeStatus::RUNNING;
     }
 
-    // ---- 起飞：轨迹 + PID + 异常 ----
-    BT::NodeStatus runTakeoff(bool ch5_high, double current_z)
+    // S 曲线（smootherstep）：端点函数值/一阶导=0，起转油门 ramp 平滑
+    static double smootherstep(double t)
     {
-        // 1. CH5 拨低 → 中止
+        t = std::max(0.0, std::min(1.0, t));
+        return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+    }
+
+    // ---- 起转：开环油门 S 曲线 ramp 到悬停值以下，电机起转但不起飞 ----
+    BT::NodeStatus runSpoolUp(bool ch5_high)
+    {
+        // 地面上 CH5 拨低 → 中止上锁（尚未离地，安全）
         if (!ch5_high) {
-            ROS_WARN("SkillExecutor: 起飞中 CH5 拨低 → 中止上锁");
+            ROS_WARN("SkillExecutor: 起转中 CH5 拨低 → 中止上锁");
             abort();
+            return BT::NodeStatus::RUNNING;
+        }
+
+        double elapsed = (ros::Time::now() - spool_start_time_).toSec();
+        if (elapsed >= spool_duration_) {
+            enterTakeoff();
+            return BT::NodeStatus::RUNNING;
+        }
+
+        // 油门 S 曲线（smootherstep：端点油门速率=0，接手平滑）
+        double s = smootherstep(elapsed / std::max(1e-6, spool_duration_));
+        // 峰值按「怠速→悬停」跨度取比例：1000 + (hover_throttle−1000)×ratio，而非 hover_throttle×ratio
+        double peak = spool_throttle_min_ + (ctrl_params_.hover_throttle - spool_throttle_min_) * spool_peak_ratio_;
+        double thr  = spool_throttle_min_ + (peak - spool_throttle_min_) * s;
+
+        setChannel(2, static_cast<int>(std::round(thr)));  // CH3 油门 ramp
+        setChannel(0, 1500);  // CH1 roll 中立
+        setChannel(1, 1500);  // CH2 pitch 中立
+        setChannel(3, 1500);  // CH4 yaw 中立
+        setChannel(5, 1000);  // CH6 ANGLE
+        setChannel(6, 1000);  // CH7 关 RTH
+
+        ROS_DEBUG_THROTTLE(1.0, "SkillExecutor: SPOOL_UP t=%.2f thr=%.0f", elapsed, thr);
+        return BT::NodeStatus::RUNNING;
+    }
+
+    // ---- 进入起飞：以当前测距高度为起点，rest-to-rest snap 爬到目标高度 ----
+    void enterTakeoff()
+    {
+        auto& rb = RosBackend::instance();
+        double z0 = 0.0;
+        {
+            std::lock_guard<std::mutex> lock(rb.mutex());
+            z0 = rb.rangefinder();
+        }
+        Eigen::Vector3d p_start(0.0, 0.0, z0);
+        Eigen::Vector3d goal(0.0, 0.0, meta_.target_z);
+        traj_ = trajectory::MinSnapTrajectory::singleSegment(p_start, goal, takeoff_duration_);
+
+        start_time_    = ros::Time::now();
+        arrived_since_ = ros::Time(0);
+        state_ = State::TAKEOFF;
+        ROS_INFO("SkillExecutor: 起飞 rest-to-rest z=%.2f→%.2f T=%.2fs",
+                 z0, meta_.target_z, takeoff_duration_);
+    }
+
+    // ---- 起飞：rest-to-rest snap + 统一位置控制器（离地后异常 → 降落 RTH，不上锁） ----
+    BT::NodeStatus runTakeoff(bool ch5_high)
+    {
+        // 离地后 CH5 拨低 → 降落（RTH），而非上锁坠机
+        if (!ch5_high) {
+            ROS_WARN("SkillExecutor: 起飞中 CH5 拨低 → 降落 (RTH)");
+            startLanding();
             return BT::NodeStatus::RUNNING;
         }
 
         double elapsed = (ros::Time::now() - start_time_).toSec();
 
-        // 2. 超时 → 中止
+        // 超时 → 降落（RTH）
         if (elapsed > meta_.timeout) {
-            ROS_WARN("SkillExecutor: 超时 (%.1fs > %.1fs) → 中止上锁", elapsed, meta_.timeout);
-            abort();
+            ROS_WARN("SkillExecutor: 起飞超时 (%.1fs > %.1fs) → 降落", elapsed, meta_.timeout);
+            startLanding();
             return BT::NodeStatus::RUNNING;
         }
 
-        // 2.5 提前到高度即悬停：current_z ≥ hover_reach_threshold 持续 hold_time 就提前切，
-        //     不等轨迹跑满（治「时间驱动一路冲到 1.5m」的超调）
-        double reach_threshold = hover_reach_threshold_;
-        if (current_z >= reach_threshold) {
-            if (reached_since_ == ros::Time(0)) reached_since_ = ros::Time::now();
-            if ((ros::Time::now() - reached_since_).toSec() >= hover_reach_hold_time_) {
-                ROS_INFO("SkillExecutor: 提前到达目标高度 (z=%.2fm, 阈值=%.2fm) → 悬停 (上位机 ANGLE 定高)",
-                         current_z, reach_threshold);
+        // 读测量：首飞 takeoff_lateral=false → 不要求 VINS；读失败也走降落而非上锁
+        Eigen::Vector3d p_M, v_M;
+        if (!readState(p_M, v_M, takeoff_lateral_)) {
+            ROS_WARN("SkillExecutor: 起飞读状态失败 → 降落");
+            startLanding();
+            return BT::NodeStatus::RUNNING;
+        }
+
+        // 参考轨迹（t 越界钳制到 T，保持终点悬停参考）
+        Eigen::Vector3d p_ref, v_ref, a_ref;
+        traj_.evaluate(elapsed, p_ref, v_ref, a_ref);
+
+        // 到达判定 → 悬停（rest-to-rest 端点 v≈0，达到即平滑切换）
+        double err = std::abs(p_M.z() - meta_.target_z);
+        if (elapsed >= traj_.totalTime() && err <= arrive_tol_ && std::abs(v_M.z()) <= vel_tol_) {
+            if (arrived_since_ == ros::Time(0)) arrived_since_ = ros::Time::now();
+            if ((ros::Time::now() - arrived_since_).toSec() >= arrive_hold_) {
+                ROS_INFO("SkillExecutor: 起飞到达 z=%.2fm (v=%.2f) → 悬停", p_M.z(), v_M.z());
                 enterHover();
                 return BT::NodeStatus::RUNNING;
             }
         } else {
-            reached_since_ = ros::Time(0);
+            arrived_since_ = ros::Time(0);
         }
 
-        // 3. 轨迹完成 → 悬停（需实际高度到位，否则按超时中止）
-        if (traj_index_ >= trajectory_.time.size()) {
-            double final_error = std::abs(meta_.target_z - current_z);
-            if (final_error <= meta_.tolerance_high) {
-                ROS_INFO("SkillExecutor: 轨迹完成 → 悬停 (z=%.2fm, 上位机 ANGLE 定高)", current_z);
-                enterHover();
-            } else {
-                // 轨迹时间走完但没爬到目标高度（拆桨/卡住）→ 等同超时，中止上锁
-                ROS_WARN("SkillExecutor: 轨迹走完未达目标高度 (z=%.2fm, target=%.2fm) → 中止上锁",
-                         current_z, meta_.target_z);
-                abort();
-            }
-            return BT::NodeStatus::RUNNING;
-        }
+        // 控制输出：首飞 takeoff_lateral=false → override=true → 仅垂直（CH1/CH2 中立）
+        applyController(p_ref, v_ref, a_ref, p_M, v_M, !takeoff_lateral_);
 
-        // 4. 推进轨迹
-        double t_target = trajectory_.time[traj_index_];
-        if (elapsed >= t_target) {
-            double base_throttle = trajectory_.throttle[traj_index_];
-            // 期望高度：由油门归一化导出，与轨迹曲线同形。
-            // 线性轨迹时等价于按时间线性；S 曲线轨迹时 PID 参考高度跟随 S 曲线，与开环油门一致。
-            double thr_min  = 1000.0;
-            double thr_peak = trajectory_.throttle.empty() ? 1000.0 : trajectory_.throttle.back();
-            double norm     = std::max(0.0, (base_throttle - thr_min) / std::max(1.0, thr_peak - thr_min));
-            double desired_z = meta_.target_z * norm;
-            double error = desired_z - current_z;
-            double abs_err = std::abs(error);
-
-            // 三级判定（DANGER 由 enable_height_monitor 门控）
-            if (enable_height_monitor_ && abs_err > meta_.tolerance_high) {
-                ROS_ERROR("SkillExecutor: DANGER |error|=%.2fm > %.2fm (z=%.2f, desired=%.2f) → 中止上锁",
-                          abs_err, meta_.tolerance_high, current_z, desired_z);
-                abort();
-                return BT::NodeStatus::RUNNING;
-            }
-
-            // PID 修正（仅油门通道）
-            double derivative = (error - prev_error_) / trajectory_.interval;
-            integral_ += error * trajectory_.interval;
-            double correction = kp_ * error + ki_ * integral_ + kd_ * derivative;
-            double output_throttle = std::max(1000.0, std::min(2000.0, base_throttle + correction));
-
-            // 写通道
-            setChannel(2, static_cast<int>(output_throttle));                    // CH3 油门
-            setChannel(0, static_cast<int>(trajectory_.roll[traj_index_]));      // CH1 roll
-            setChannel(1, static_cast<int>(trajectory_.pitch[traj_index_]));     // CH2 pitch
-            setChannel(3, static_cast<int>(trajectory_.yaw[traj_index_]));       // CH4 yaw
-
-            if (abs_err <= meta_.tolerance_low)
-                ROS_DEBUG_THROTTLE(2.0, "SkillExecutor: NORMAL t=%.2f z=%.2f err=%.2f thr=%.0f",
-                                   elapsed, current_z, error, output_throttle);
-            else
-                ROS_INFO_THROTTLE(1.0, "SkillExecutor: DEVIATED t=%.2f z=%.2f err=%.2f thr=%.0f",
-                                  elapsed, current_z, error, output_throttle);
-
-            prev_error_ = error;
-            traj_index_++;
-        }
-
+        ROS_DEBUG_THROTTLE(2.0, "SkillExecutor: TAKEOFF t=%.2f z=%.2f ref_z=%.2f err=%.2f",
+                           elapsed, p_M.z(), p_ref.z(), err);
         return BT::NodeStatus::RUNNING;
     }
 
@@ -537,7 +554,7 @@ private:
     }
 
     // ---- 读取任务系测量（水平 VINS + 垂直高度源相对值）；闭环失效返回 false ----
-    bool readState(Eigen::Vector3d& p_M, Eigen::Vector3d& v_M)
+    bool readState(Eigen::Vector3d& p_M, Eigen::Vector3d& v_M, bool require_odom = true)
     {
         const bool closed = (feedback_mode_ == "closed_loop");
         auto& rb = RosBackend::instance();
@@ -565,7 +582,7 @@ private:
             }
         }
 
-        if (closed && (!odom_ok || odom_age > odom_stale_timeout_)) {
+        if (closed && require_odom && (!odom_ok || odom_age > odom_stale_timeout_)) {
             ROS_ERROR("SkillExecutor: VINS 位姿失效 (ok=%d, age=%.2fs) → 中止上锁", odom_ok, odom_age);
             return false;
         }
@@ -797,6 +814,14 @@ private:
     double   hover_reach_threshold_;
     ros::Time landed_since_;
     ros::Time reached_since_;
+
+    // ---- 起转 + 起飞（rest-to-rest snap）成员 ----
+    ros::Time spool_start_time_;
+    double spool_duration_ = 2.0;
+    double spool_peak_ratio_ = 0.90;
+    double spool_throttle_min_ = 1000.0;
+    double takeoff_duration_ = 3.0;
+    bool   takeoff_lateral_ = false;
 
     // ---- 轨迹跟踪（最小 snap）成员 ----
     std::string feedback_mode_;
