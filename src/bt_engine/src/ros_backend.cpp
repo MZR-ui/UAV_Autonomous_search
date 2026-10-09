@@ -26,6 +26,7 @@ void RosBackend::init(ros::NodeHandle& nh, ros::NodeHandle& nh_priv)
     // 调试话题：地面倾斜/方向验证用
     pub_accel_lin_ = nh.advertise<geometry_msgs::Vector3Stamped>("/bt_engine/accel_lin", 1);
     pub_vel_est_   = nh.advertise<geometry_msgs::Vector3Stamped>("/bt_engine/vel_est", 1);
+    pub_traj_ref_  = nh.advertise<msp_interface::SnapRef>("/bt_engine/traj_ref", 1);
 }
 
 void RosBackend::remoteCb(const remote_info::Remote::ConstPtr& msg)
@@ -169,6 +170,17 @@ void RosBackend::publishDebug(const Eigen::Vector3d& a_enU)
     vm.vector.z = vel_z_.value();
     pub_accel_lin_.publish(am);
     pub_vel_est_.publish(vm);
+}
+
+void RosBackend::publishTrajRef(const Eigen::Vector3d& p, const Eigen::Vector3d& v, const Eigen::Vector3d& a)
+{
+    msp_interface::SnapRef msg;
+    msg.header.stamp = ros::Time::now();
+    msg.header.frame_id = "map";   // 与 vel_est 一致
+    msg.position.x = p.x(); msg.position.y = p.y(); msg.position.z = p.z();
+    msg.velocity.x = v.x(); msg.velocity.y = v.y(); msg.velocity.z = v.z();
+    msg.acceleration.x = a.x(); msg.acceleration.y = a.y(); msg.acceleration.z = a.z();
+    pub_traj_ref_.publish(msg);
 }
 
 void RosBackend::setTaskFrame(const Eigen::Matrix3d& R_WM, const Eigen::Vector3d& p0_W, double yaw0)

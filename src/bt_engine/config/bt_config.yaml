@@ -12,15 +12,6 @@ publish_rate: 100.0
 enable_height_monitor: false    # 高度偏差 DANGER 监测（拆桨测试时 false）
 landing_height_threshold: 0.1   # 着陆判定：测距高度阈值 (m)
 landing_hold_time: 2.0          # 着陆判定：持续时长 (s)
-hover_reach_hold_time: 0.0      # 提前到高度悬停：达标持续确认时长 (s)，0=一达标立即切悬停，靠惯性到位
-hover_reach_threshold: 0.75       # 提前到高度悬停：触发高度阈值 (m)，z≥该值即切悬停（首飞再保守：0.85→0.7，悬停更低、离顶更远）
-
-# 起飞 PID 修正参数（对轨迹油门的小幅反馈修正）
-# 实测 Kp=200 会把轨迹油门 1420 推到 ~1470，导致爬升速度过快、超调 0.22m → 降到 80
-kp: 80.0       # 比例：误差(m) → PWM 油门修正（前馈轨迹是主力，PID 只做小幅修正）
-ki: 10.0       # 积分：消除稳态误差（按 0.02s/tick 累积，作用弱）
-kd: 8.0        # 微分：抑制超调（接近目标时按爬升速度主动收油门；测距噪声大就降到 2~3）
-# 注：kp/ki/kd 为旧 CSV 起飞 PID，起转+snap 改造后已停用（保留定义，待清理）
 
 # ================= 起转 + 起飞（rest-to-rest snap）=================
 spool_duration: 2.0          # 起转油门 S 曲线 ramp 时长 (s)
@@ -42,7 +33,7 @@ hover_hold_before_traj: 5.0    # 轨迹前上位机悬停稳定时长 (s)，期�
 # ---- 轨迹目标与时间 ----
 target_x: 2.0                  # target_mode=relative 时：每次相对当前点前向增量 (m)；absolute 时：绝对点 x
 target_y: 0.0                  # 相对增量/绝对点 y（左为正）
-target_z: 1.0                  # 相对增量/绝对点 z（relative=每次再升高量；absolute=离地高度）
+target_z: 0.0                  # 相对增量/绝对点 z（relative=每次再升高量；absolute=离地高度）
 duration_mode: "auto"          # auto=按 cruise_speed 估时长；fixed=用 fixed_duration
 fixed_duration: 0.0            # duration_mode=fixed 时的固定轨迹时长 (s)，0=忽略
 cruise_speed: 0.5              # auto 模式巡航速度 (m/s)，时长=dist/speed 后夹在 [T_min,T_max]
@@ -56,13 +47,20 @@ kd_xy: 1.4                     # 水平速度微分增益 (1/s)，ζ≈0.7（配
 kd_z: 1.7                      # 垂向速度微分增益，ζ≈0.7（配 kp_z=1.5；原 2.0）
 gravity: 9.81                  # 重力加速度 (m/s²)
 angle_max: 0.25                # 最大倾角 (rad)，映射到 ±500 PWM（首飞收紧：0.35→0.25，限制失控幅度）
-hover_throttle: 1420.0         # ANGLE 悬停油门 PWM（实测标定）
+hover_throttle: 1420.0         # ANGLE 悬停油门 PWM（粗略初值；2026-10-05 实测真实≈1440，偏置估计器在悬停里 bootstrap 补足 ~20PWM）
 k_thr: 30.0                    # 油门推力→PWM 增益 (PWM/(m/s²))
 out_slew_max: 1000.0           # 输出变化率限幅 (PWM/s)：限制 hover/trajectory 每通道 PWM 变化速率，防单拍野值/大误差阶跃；0=不限幅
 pitch_sign: 1.0                # 俯仰角→PWM 符号：正向=低头(CH2>1500)。标准 INAV CH2>1500=低头，故 +1；首飞前地面验证方向！
 roll_sign: 1.0                 # 横滚角→PWM 符号：正向=右滚(CH1>1500)。标准 INAV CH1>1500=右滚
 yaw_enabled: false             # 是否启航向控制（当前保持 CH4 中立）
 yaw_kp: 0.0                    # 航向比例增益
+
+# ---- 油门偏置估计器（在线学习真实悬停油门，吸收质量/电压变化，消除稳态高度误差）----
+hover_bias_enabled: true      # 总开关（false=回退纯 PD；飞行异常可一键关掉）
+hover_bias_ki: 3.0            # 积分增益 PWM/(m·s)：ep_z>0(偏低)时 bias 增加；慢积分收敛稳
+hover_bias_max: 80.0          # bias 限幅 ±80 PWM（抗饱和）
+hover_bias_ep_max: 0.6        # 仅 |ep_z| < 该值时积分（放宽到 >0.44m 稳态误差，否则 ~20PWM 悬停油门差学不到）
+hover_bias_vz_max: 0.3        # 仅 |v_z| < 该值时积分（稳定悬停才学）
 
 # ---- 速度估计器（一阶互补：飞控加速度计积分 + 位置源去漂移）----
 vel_est_enabled: true          # 速度环总开关（false=回退旧行为 v_M=0）
@@ -71,19 +69,21 @@ vel_est_alpha_xy: 0.95         # XY 一阶互补权重（IMU 占比；VINS 位�
 vel_est_gravity: 9.80665       # 重力加速度幅值 (m/s²)，用于加速度计去重力
 
 # ---- 悬停安全限幅 ----
-hover_danger_tol: 0.4          # 悬停位置跟踪误差超限阈值 (m)（首飞收紧：0.5→0.4，更早触发兜底）
+hover_danger_tol: 0.6          # 悬停位置跟踪误差超限阈值 (m)（放宽到 >0.44m 稳态误差，避免偏置学习期误触降落）
 hover_danger_hold: 0.3         # 越界持续时长 (s)，防测距噪声误触发
-hover_max_height: 1.2          # 绝对高度上限 (m)，测距仪，越界即安全动作（首飞再收紧：1.2→1.0，悬停目标≈0.7）
+hover_max_height: 2.5          # 绝对高度上限 (m)，测距仪，越界即安全动作（起飞1m + 轨迹相对+1m 终点2m，留0.5m余量；先确认测距仪量程≥2.5m）
 hover_min_height: 0.3          # 绝对高度下限 (m)
 hover_safety_action: "landing" # 越界动作：landing=CH7 RTH 自动降落 / abort=上锁
 
 # ---- 到达 / 安全 / 触发 ----
-arrive_tol: 0.1                # 到达判定：位置误差阈值 (m)
+arrive_tol: 0.1                # 到达判定：位置误差阈值 (m)（轨迹段使用）
+takeoff_arrive_tol: 0.6        # 起飞→悬停到达判定 (m)：比 arrive_tol 放宽，允许起飞停在大偏差(~0.44m 稳态)，交给悬停油门偏置 bootstrap 补足
 vel_tol: 0.1                   # 到达判定：速度阈值 (m/s)
 arrive_hold: 1.0               # 到达后保持确认时长 (s)
 danger_tol: 0.8                # DANGER：位置跟踪误差超限 (m)，超限中止上锁
 timeout_traj: 12.0             # 轨迹总超时 (s)
 odom_stale_timeout: 0.3        # VINS 位姿数据判 stale 阈值 (s)，超时中止
+vins_jump_max_speed: 2.0       # VINS 位置(XY)单拍跳变钳制：位移/时间超此速度(m/s)判跳变、沿用上一拍；只作用位置反馈，不影响速度估计
 ch6_mid_low: 1400              # CH6 中档判定下限
 ch6_mid_high: 1600             # CH6 中档判定上限
 ch6_debounce: 0.3              # CH6 中档去抖时长 (s)

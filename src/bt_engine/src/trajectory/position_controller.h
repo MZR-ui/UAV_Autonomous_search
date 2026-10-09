@@ -17,6 +17,7 @@ struct CtrlParams
     double gravity = 9.81;               // 重力 (m/s²)
     double angle_max = 0.35;             // ANGLE 满量程倾角 (rad ≈ 20°)，须与 INAV max_angle_inclination 对齐
     double hover_throttle = 1420.0;      // 悬停油门 PWM（实测标定，随电压漂移）
+    double hover_bias = 0.0;             // 悬停油门偏置估计 PWM（在线学习真实悬停油门，吸收质量/电压变化）
     double k_thr = 30.0;                 // 推力→油门斜率 PWM/(m/s²)（实测标定）
     double pitch_sign = +1.0;            // 俯仰角→PWM 符号（标准 INAV：CH2>1500=低头；正向=低头。首飞前地面验证，可翻转）
     double roll_sign  = +1.0;            // 横滚角→PWM 符号（标准 INAV：CH1>1500=右滚）
@@ -80,8 +81,8 @@ public:
         const double roll  = std::atan2(-z_b.y(),
                                         std::sqrt(z_b.x() * z_b.x() + z_b.z() * z_b.z()));
 
-        // 4. 推力 → 油门（近悬停线性化）
-        const double throttle = p_.hover_throttle + p_.k_thr * (f_norm - p_.gravity);
+        // 4. 推力 → 油门（近悬停线性化；hover_bias 为在线学习的悬停油门偏置，消除稳态误差）
+        const double throttle = p_.hover_throttle + p_.hover_bias + p_.k_thr * (f_norm - p_.gravity);
 
         out.throttle_pwm = clampPwm(throttle);
         if (p_.lateral_enabled) {

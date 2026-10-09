@@ -11,6 +11,7 @@
 #include <geometry_msgs/Vector3Stamped.h>
 #include <nav_msgs/Odometry.h>
 #include <msp_interface/Attitude.h>
+#include <msp_interface/SnapRef.h>
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 #include "trajectory/velocity_estimator.h"
@@ -61,6 +62,9 @@ public:
     // 由 skill_executor 在起飞建立任务系时调用，供 XY 速度估计做帧对齐（内部自加锁）
     void setTaskFrame(const Eigen::Matrix3d& R_WM, const Eigen::Vector3d& p0_W, double yaw0);
 
+    // 发布最小 Snap 参考轨迹（p/v/a，任务系 M），由 skill_executor 在起飞/悬停/轨迹中调用
+    void publishTrajRef(const Eigen::Vector3d& p, const Eigen::Vector3d& v, const Eigen::Vector3d& a);
+
 private:
     RosBackend() = default;
 
@@ -83,7 +87,7 @@ private:
 
     ros::Subscriber sub_remote_, sub_status_, sub_altitude_, sub_rangefinder_;
     ros::Subscriber sub_odom_, sub_attitude_, sub_imu_, sub_trigger_;
-    ros::Publisher pub_accel_lin_, pub_vel_est_;
+    ros::Publisher pub_accel_lin_, pub_vel_est_, pub_traj_ref_;
 
     std::mutex mtx_;
     std::vector<uint16_t> remote_channels_;

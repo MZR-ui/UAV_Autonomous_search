@@ -29,6 +29,8 @@ add_message_files(
   MspChannel.msg
   EscTelem.msg
   Attitude.msg
+  SkillState.msg
+  SnapRef.msg
 )
 
 ## 生成消息（依赖 std_msgs）

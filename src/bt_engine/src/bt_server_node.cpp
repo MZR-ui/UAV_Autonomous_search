@@ -1,6 +1,7 @@
 #include <ros/ros.h>
 #include <behaviortree_cpp/bt_factory.h>
 #include "msp_interface/MspChannel.h"
+#include "msp_interface/SkillState.h"
 #include "ros_backend.h"
 #include "skill_loader.h"
 
@@ -62,6 +63,7 @@ int main(int argc, char** argv)
     double cruise_speed = 0.5, T_min = 2.0, T_max = 8.0;
     double arrive_tol = 0.1, vel_tol = 0.1, arrive_hold = 1.0;
     double danger_tol = 0.8, timeout_traj = 12.0, odom_stale_timeout = 0.3;
+    double vins_jump_max_speed = 2.0;
     int ch6_mid_low = 1400, ch6_mid_high = 1600;
     double ch6_debounce = 0.3;
     bool gimbal_lock = true;
@@ -75,6 +77,9 @@ int main(int argc, char** argv)
     double out_slew_max = 1000.0;
     bool yaw_enabled = false;
     double yaw_kp = 0.0;
+    bool hover_bias_enabled = true;
+    double hover_bias_ki = 3.0, hover_bias_max = 80.0;
+    double hover_bias_ep_max = 0.4, hover_bias_vz_max = 0.3;
 
     // ---- 悬停安全限幅 ----
     double hover_danger_tol = 0.5;
@@ -100,6 +105,7 @@ int main(int argc, char** argv)
     nh_priv.param<double>("danger_tol", danger_tol, 0.8);
     nh_priv.param<double>("timeout_traj", timeout_traj, 12.0);
     nh_priv.param<double>("odom_stale_timeout", odom_stale_timeout, 0.3);
+    nh_priv.param<double>("vins_jump_max_speed", vins_jump_max_speed, 2.0);
     nh_priv.param<int>("ch6_mid_low", ch6_mid_low, 1400);
     nh_priv.param<int>("ch6_mid_high", ch6_mid_high, 1600);
     nh_priv.param<double>("ch6_debounce", ch6_debounce, 0.3);
@@ -120,6 +126,11 @@ int main(int argc, char** argv)
     nh_priv.param<double>("out_slew_max", out_slew_max, 1000.0);
     nh_priv.param<bool>("yaw_enabled", yaw_enabled, false);
     nh_priv.param<double>("yaw_kp", yaw_kp, 0.0);
+    nh_priv.param<bool>("hover_bias_enabled", hover_bias_enabled, true);
+    nh_priv.param<double>("hover_bias_ki", hover_bias_ki, 3.0);
+    nh_priv.param<double>("hover_bias_max", hover_bias_max, 80.0);
+    nh_priv.param<double>("hover_bias_ep_max", hover_bias_ep_max, 0.4);
+    nh_priv.param<double>("hover_bias_vz_max", hover_bias_vz_max, 0.3);
 
     nh_priv.param<double>("hover_danger_tol", hover_danger_tol, 0.5);
     nh_priv.param<double>("hover_danger_hold", hover_danger_hold, 0.3);
@@ -193,6 +204,7 @@ int main(int argc, char** argv)
     tree.rootBlackboard()->set("danger_tol", danger_tol);
     tree.rootBlackboard()->set("timeout_traj", timeout_traj);
     tree.rootBlackboard()->set("odom_stale_timeout", odom_stale_timeout);
+    tree.rootBlackboard()->set("vins_jump_max_speed", vins_jump_max_speed);
     tree.rootBlackboard()->set("ch6_mid_low", ch6_mid_low);
     tree.rootBlackboard()->set("ch6_mid_high", ch6_mid_high);
     tree.rootBlackboard()->set("ch6_debounce", ch6_debounce);
@@ -213,6 +225,12 @@ int main(int argc, char** argv)
     tree.rootBlackboard()->set("out_slew_max", out_slew_max);
     tree.rootBlackboard()->set("yaw_enabled", yaw_enabled);
     tree.rootBlackboard()->set("yaw_kp", yaw_kp);
+    tree.rootBlackboard()->set("hover_bias_enabled", hover_bias_enabled);
+    tree.rootBlackboard()->set("hover_bias_ki", hover_bias_ki);
+    tree.rootBlackboard()->set("hover_bias_max", hover_bias_max);
+    tree.rootBlackboard()->set("hover_bias_ep_max", hover_bias_ep_max);
+    tree.rootBlackboard()->set("hover_bias_vz_max", hover_bias_vz_max);
+    tree.rootBlackboard()->set("skill_state", 0);   // 预注册状态键(int)，避免首拍 get 类型未知
     tree.rootBlackboard()->set("hover_danger_tol", hover_danger_tol);
     tree.rootBlackboard()->set("hover_danger_hold", hover_danger_hold);
     tree.rootBlackboard()->set("hover_max_height", hover_max_height);
@@ -230,6 +248,7 @@ int main(int argc, char** argv)
 
     // 发布器
     ros::Publisher control_pub = nh.advertise<msp_interface::MspChannel>("/control_data", 1);
+    ros::Publisher state_pub = nh.advertise<msp_interface::SkillState>("/bt_engine/skill_state", 1);
 
     ros::Rate rate(tick_rate);
     ROS_INFO("BT Server: running at %.1f Hz", tick_rate);
@@ -250,6 +269,21 @@ int main(int argc, char** argv)
         msg.header.stamp = ros::Time::now();
         msg.channels = out_channels;
         control_pub.publish(msg);
+
+        // 发布技能状态（手动/自动都发，供离线对齐；state 由 skill_executor 写 blackboard）
+        msp_interface::SkillState st;
+        st.header.stamp = ros::Time::now();
+        int stv = 0;
+        tree.rootBlackboard()->get("skill_state", stv);
+        st.state = static_cast<uint8_t>(stv);
+        {
+            auto& rb = RosBackend::instance();
+            std::lock_guard<std::mutex> lock(rb.mutex());
+            st.armed = (rb.armingFlags() & 0x04u) != 0;
+            const auto& ch = rb.remoteChannels();
+            st.auto_mode = (ch.size() > 7) && (ch[7] >= 1350);
+        }
+        state_pub.publish(st);
 
         rate.sleep();
     }

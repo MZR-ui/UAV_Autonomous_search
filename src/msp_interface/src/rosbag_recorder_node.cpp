@@ -15,6 +15,8 @@
 #include "msp_interface/MspChannel.h"
 #include "msp_interface/EscTelem.h"
 #include "msp_interface/Attitude.h"
+#include "msp_interface/SkillState.h"
+#include "msp_interface/SnapRef.h"
 #include "remote_info/Remote.h"
 #include <boost/filesystem.hpp>
 #include <sstream>
@@ -83,6 +85,10 @@ public:
             boost::bind(&RosbagRecorderNode::recordToBag<geometry_msgs::Vector3Stamped>, this, "/bt_engine/accel_lin", _1));
         vel_est_sub_   = nh_.subscribe<geometry_msgs::Vector3Stamped>("/bt_engine/vel_est", 100,
             boost::bind(&RosbagRecorderNode::recordToBag<geometry_msgs::Vector3Stamped>, this, "/bt_engine/vel_est", _1));
+        skill_state_sub_ = nh_.subscribe<msp_interface::SkillState>("/bt_engine/skill_state", 100,
+            boost::bind(&RosbagRecorderNode::recordToBag<msp_interface::SkillState>, this, "/bt_engine/skill_state", _1));
+        traj_ref_sub_   = nh_.subscribe<msp_interface::SnapRef>("/bt_engine/traj_ref", 100,
+            boost::bind(&RosbagRecorderNode::recordToBag<msp_interface::SnapRef>, this, "/bt_engine/traj_ref", _1));
 
         // RealSense 订阅（可选）
         if (record_realsense_) {
@@ -277,6 +283,7 @@ private:
     ros::Subscriber status_sub_, battery_sub_, esc_sub_, attitude_sub_, ch_sub_;
     ros::Subscriber vins_odom_sub_, vins_path_sub_, control_sub_;
     ros::Subscriber accel_lin_sub_, vel_est_sub_;
+    ros::Subscriber skill_state_sub_, traj_ref_sub_;
     ros::Subscriber sub_color_img_, sub_color_info_, sub_depth_img_, sub_depth_info_;
     ros::Subscriber sub_aligned_img_, sub_aligned_info_, sub_cam_imu_;
     ros::Subscriber sub_infra1_img_, sub_infra2_img_;

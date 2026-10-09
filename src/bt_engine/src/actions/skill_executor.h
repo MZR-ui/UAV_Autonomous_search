@@ -46,17 +46,15 @@ class SkillExecutor : public BT::StatefulActionNode
 public:
     SkillExecutor(const std::string& name, const BT::NodeConfig& config)
         : BT::StatefulActionNode(name, config)
-        , traj_index_(0), start_time_(ros::Time(0)), integral_(0.0), prev_error_(0.0)
+        , traj_index_(0), start_time_(ros::Time(0))
         , state_(State::IDLE), enable_height_monitor_(false)
-        , landing_height_threshold_(0.1), landing_hold_time_(2.0), hover_reach_hold_time_(0.0)
-        , kp_(200.0), ki_(10.0), kd_(0.0), hover_reach_threshold_(0.9)
+        , landing_height_threshold_(0.1), landing_hold_time_(2.0)
         , landed_since_(ros::Time(0))
-        , reached_since_(ros::Time(0))
         , feedback_mode_("closed_loop")
         , target_(2.0, 0.0, 1.0)
         , duration_mode_("auto"), fixed_duration_(0.0)
         , cruise_speed_(0.5), T_min_(2.0), T_max_(8.0)
-        , arrive_tol_(0.1), vel_tol_(0.1), arrive_hold_(1.0)
+        , arrive_tol_(0.1), takeoff_arrive_tol_(0.6), vel_tol_(0.1), arrive_hold_(1.0)
         , danger_tol_(0.8), timeout_traj_(12.0), odom_stale_timeout_(0.3)
         , ch6_mid_low_(1400), ch6_mid_high_(1600), ch6_debounce_(0.3)
         , gimbal_lock_(true)
@@ -87,11 +85,6 @@ public:
         bb->get("enable_height_monitor", enable_height_monitor_);
         bb->get("landing_height_threshold", landing_height_threshold_);
         bb->get("landing_hold_time", landing_hold_time_);
-        bb->get("hover_reach_hold_time", hover_reach_hold_time_);
-        bb->get("kp", kp_);
-        bb->get("ki", ki_);
-        bb->get("kd", kd_);
-        bb->get("hover_reach_threshold", hover_reach_threshold_);
 
         // ---- 起转 + 起飞（rest-to-rest snap）参数 ----
         bb->get("spool_duration", spool_duration_);
@@ -113,11 +106,13 @@ public:
         bb->get("T_min", T_min_);
         bb->get("T_max", T_max_);
         bb->get("arrive_tol", arrive_tol_);
+        bb->get("takeoff_arrive_tol", takeoff_arrive_tol_);
         bb->get("vel_tol", vel_tol_);
         bb->get("arrive_hold", arrive_hold_);
         bb->get("danger_tol", danger_tol_);
         bb->get("timeout_traj", timeout_traj_);
         bb->get("odom_stale_timeout", odom_stale_timeout_);
+        bb->get("vins_jump_max_speed", vins_jump_max_speed_);
         bb->get("ch6_mid_low", ch6_mid_low_);
         bb->get("ch6_mid_high", ch6_mid_high_);
         bb->get("ch6_debounce", ch6_debounce_);
@@ -148,6 +143,11 @@ public:
         bb->get("hover_max_height", hover_max_height_);
         bb->get("hover_min_height", hover_min_height_);
         bb->get("hover_safety_action", hover_safety_action_);
+        bb->get("hover_bias_enabled", hover_bias_enabled_);
+        bb->get("hover_bias_ki", hover_bias_ki_);
+        bb->get("hover_bias_max", hover_bias_max_);
+        bb->get("hover_bias_ep_max", hover_bias_ep_max_);
+        bb->get("hover_bias_vz_max", hover_bias_vz_max_);
 
         // 路径约定: <skills_dir>/<skill_name>/trajectory.csv + meta.yaml
         std::string skills_dir;
@@ -161,11 +161,11 @@ public:
 
         traj_index_   = 0;
         start_time_   = ros::Time(0);
-        integral_     = 0.0;
-        prev_error_   = 0.0;
         state_        = State::IDLE;
         landed_since_ = ros::Time(0);
-        reached_since_ = ros::Time(0);
+        override_prev_ = false;
+        hover_bias_    = 0.0;
+        last_bias_time_ = ros::Time(0);
 
         ROS_INFO("SkillExecutor [%s]: 待命 (IDLE, height_monitor=%s)",
                  skill_name.c_str(), enable_height_monitor_ ? "on" : "off");
@@ -202,6 +202,10 @@ public:
                 trigger_rising = ch6_rising;
             }
         }
+
+        // 每拍回写偏置估计值（各状态统一用当前 hover_bias_）+ 记录状态（供 bt_server 发布 /bt_engine/skill_state）
+        ctrl_params_.hover_bias = hover_bias_;
+        config().blackboard->set("skill_state", static_cast<int>(state_));
 
         switch (state_) {
             case State::IDLE:      return runIdle(ch5_high, ch5_low, flags);
@@ -346,10 +350,11 @@ private:
         // 参考轨迹（t 越界钳制到 T，保持终点悬停参考）
         Eigen::Vector3d p_ref, v_ref, a_ref;
         traj_.evaluate(elapsed, p_ref, v_ref, a_ref);
+        RosBackend::instance().publishTrajRef(p_ref, v_ref, a_ref);
 
         // 到达判定 → 悬停（rest-to-rest 端点 v≈0，达到即平滑切换）
         double err = std::abs(p_M.z() - meta_.target_z);
-        if (elapsed >= traj_.totalTime() && err <= arrive_tol_ && std::abs(v_M.z()) <= vel_tol_) {
+        if (elapsed >= traj_.totalTime() && err <= takeoff_arrive_tol_ && std::abs(v_M.z()) <= vel_tol_) {
             if (arrived_since_ == ros::Time(0)) arrived_since_ = ros::Time::now();
             if ((ros::Time::now() - arrived_since_).toSec() >= arrive_hold_) {
                 ROS_INFO("SkillExecutor: 起飞到达 z=%.2fm (v=%.2f) → 悬停", p_M.z(), v_M.z());
@@ -399,10 +404,35 @@ private:
             return BT::NodeStatus::RUNNING;
         }
 
+        // 接管结束（下降沿）→ 悬停目标刷新为当前位置，避免松杆后弹回接管前的点
+        if (override_prev_ && !override_active) {
+            hover_target_ = p_M;
+            ROS_INFO("SkillExecutor: 接管结束 → 悬停目标刷新为 (%.2f, %.2f, %.2f)",
+                     p_M.x(), p_M.y(), p_M.z());
+        }
+        override_prev_ = override_active;
+
         // 悬停安全限幅：跟踪误差/绝对高度越界 → 降落（或上锁）
         if (checkHoverSafety(p_M, current_z)) {
             return BT::NodeStatus::RUNNING;   // 已切换 LANDING / abort
         }
+
+        // 油门偏置估计：仅稳定悬停且未接管才积分，学习真实悬停油门
+        if (hover_bias_enabled_ && !override_active) {
+            ros::Time now = ros::Time::now();
+            double dt = last_bias_time_.isZero() ? 0.0 : (now - last_bias_time_).toSec();
+            last_bias_time_ = now;
+            if (dt > 0.0 && dt <= 0.1) {
+                double ep_z = hover_target_.z() - p_M.z();
+                if (std::abs(ep_z) < hover_bias_ep_max_ && std::abs(v_M.z()) < hover_bias_vz_max_) {
+                    hover_bias_ += hover_bias_ki_ * ep_z * dt;   // 偏低(ep_z>0)→增 bias→增油门
+                    hover_bias_ = std::max(-hover_bias_max_, std::min(hover_bias_max_, hover_bias_));
+                }
+            }
+        }
+
+        // 悬停参考也发布，保证参考话题在整段飞行中连续
+        RosBackend::instance().publishTrajRef(hover_target_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
 
         applyController(hover_target_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
                         p_M, v_M, override_active);
@@ -441,6 +471,8 @@ private:
         setChannel(6, 2000);  // CH7 RTH
         landed_since_ = ros::Time(0);
         hover_danger_since_ = ros::Time(0);
+        hover_bias_ = 0.0;          // 降落不学、不用残留偏置
+        last_bias_time_ = ros::Time(0);
     }
 
     // ---- 轨迹跟踪：最小 snap + 位置控制器 ----
@@ -467,6 +499,7 @@ private:
         // 3. 参考轨迹
         Eigen::Vector3d p_ref, v_ref, a_ref;
         traj_.evaluate(elapsed, p_ref, v_ref, a_ref);
+        RosBackend::instance().publishTrajRef(p_ref, v_ref, a_ref);
 
         // 4. 读测量（水平 VINS + 垂直高度源）；闭环失效返回 false
         Eigen::Vector3d p_M, v_M;
@@ -502,6 +535,7 @@ private:
                 hover_target_ = traj_goal_;
                 hover_entered_since_ = ros::Time::now();
                 state_ = State::HOVER;
+                override_prev_ = false;
                 arrived_since_ = ros::Time(0);
                 return BT::NodeStatus::RUNNING;
             }
@@ -518,14 +552,15 @@ private:
         return BT::NodeStatus::RUNNING;
     }
 
-    // ---- 进入悬停：悬停目标 = 当前位置（起飞点机头系下的绝对点） ----
+    // ---- 进入悬停：水平停当前位置，垂向目标 = 起飞目标高度 meta_.target_z（给油门偏置正确参考，否则 ep_z=0 学不到）----
     void enterHover()
     {
         Eigen::Vector3d p_M, v_M;
         readState(p_M, v_M);   // 失败时 p_M 为 0，后续 runHover 会因闭环失效 abort
-        hover_target_ = p_M;
+        hover_target_ = Eigen::Vector3d(p_M.x(), p_M.y(), meta_.target_z);
         hover_entered_since_ = ros::Time::now();
         hover_danger_since_ = ros::Time(0);
+        override_prev_ = false;
         state_ = State::HOVER;
         ROS_INFO("SkillExecutor: 进入悬停 target=(%.2f,%.2f,%.2f) height_source=%s",
                  hover_target_.x(), hover_target_.y(), hover_target_.z(), height_source_.c_str());
@@ -549,6 +584,7 @@ private:
         }
         // 交给速度估计器做 XY 帧对齐并重置积分（内部自加锁）
         rb.setTaskFrame(R_WM_, p0_W_, yaw0);
+        prev_p_valid_ = false;   // 重建任务系后，VINS 位置钳制基准清零
         ROS_INFO("SkillExecutor: 任务系已建立 (原点=起飞点, x=起飞时机头, z=重力参考 roll/pitch, yaw0=%.2f rad)",
                  yaw0);
     }
@@ -560,6 +596,7 @@ private:
         auto& rb = RosBackend::instance();
         p_M.setZero(); v_M.setZero();
         bool odom_ok = false; double odom_age = 1e9;
+        ros::Time odom_stamp;
 
         {
             std::lock_guard<std::mutex> lock(rb.mutex());
@@ -570,6 +607,7 @@ private:
                 v_M.x() = vxy.x();
                 v_M.y() = vxy.y();
                 odom_age = (ros::Time::now() - rb.odomStamp()).toSec();
+                odom_stamp = rb.odomStamp();
                 odom_ok = true;
             }
             // 垂直用高度源绝对值（离地/相对起飞点）；vins 源保持任务系 z
@@ -579,6 +617,32 @@ private:
             } else if (height_source_ != "vins") {   // 默认 rangefinder
                 p_M.z() = rb.rangefinder();
                 v_M.z() = rb.estVelZ();
+            }
+        }
+
+        // VINS 位置(XY)单拍跳变钳制：位移/时间超阈值判跳变、沿用上一拍。
+        // 只作用控制器位置反馈；速度估计走 ros_backend 原始 odom 差分，互不影响。
+        if (odom_ok) {
+            Eigen::Vector2d pxy(p_M.x(), p_M.y());
+            if (prev_p_valid_) {
+                double dt = (odom_stamp - prev_p_stamp_).toSec();
+                if (dt > 1e-3) {
+                    double max_step = vins_jump_max_speed_ * dt;
+                    double jump = (pxy - prev_p_xy_).norm();
+                    if (jump > max_step) {
+                        ROS_WARN_THROTTLE(1.0, "SkillExecutor: VINS 位置跳变 %.2fm (限 %.2fm) → 沿用上一拍",
+                                          jump, max_step);
+                        p_M.x() = prev_p_xy_.x();
+                        p_M.y() = prev_p_xy_.y();
+                    } else {
+                        prev_p_xy_ = pxy;
+                        prev_p_stamp_ = odom_stamp;
+                    }
+                }
+            } else {
+                prev_p_xy_ = pxy;
+                prev_p_stamp_ = odom_stamp;
+                prev_p_valid_ = true;
             }
         }
 
@@ -781,11 +845,13 @@ private:
         // 回到待命，等待 CH5 回落→再拨高
         state_      = State::IDLE;
         traj_index_ = 0;
-        integral_   = 0.0;
-        prev_error_ = 0.0;
         landed_since_ = ros::Time(0);
         trigger_since_ = ros::Time(0);
         arrived_since_ = ros::Time(0);
+        override_prev_ = false;      // 复位接管边沿，避免陈旧边沿误触发
+        hover_bias_ = 0.0;           // 每趟飞行从头学，不携带上一趟陈旧偏置
+        last_bias_time_ = ros::Time(0);
+        bb->set("skill_state", 0);   // IDLE
     }
 
     void setChannel(int index, int value)
@@ -803,17 +869,12 @@ private:
     SkillLoader::Meta       meta_;
     size_t   traj_index_;
     ros::Time start_time_;
-    double   prev_error_, integral_;
 
     State    state_;
     bool     enable_height_monitor_;
     double   landing_height_threshold_;
     double   landing_hold_time_;
-    double   hover_reach_hold_time_;
-    double   kp_, ki_, kd_;
-    double   hover_reach_threshold_;
     ros::Time landed_since_;
-    ros::Time reached_since_;
 
     // ---- 起转 + 起飞（rest-to-rest snap）成员 ----
     ros::Time spool_start_time_;
@@ -829,8 +890,13 @@ private:
     std::string duration_mode_;
     double fixed_duration_;
     double cruise_speed_, T_min_, T_max_;
-    double arrive_tol_, vel_tol_, arrive_hold_;
+    double arrive_tol_, takeoff_arrive_tol_, vel_tol_, arrive_hold_;
     double danger_tol_, timeout_traj_, odom_stale_timeout_;
+    // ---- VINS 位置(XY)单拍跳变钳制（只作用位置反馈，不影响速度估计）----
+    double vins_jump_max_speed_ = 2.0;      // 跳变判定速度阈值 (m/s)
+    Eigen::Vector2d prev_p_xy_ = Eigen::Vector2d::Zero(); // 上一拍接受的位置(XY)
+    ros::Time prev_p_stamp_;                // 上一拍接受位置的时间戳
+    bool   prev_p_valid_ = false;
     int    ch6_mid_low_, ch6_mid_high_;
     double ch6_debounce_;
     bool   gimbal_lock_;
@@ -851,6 +917,16 @@ private:
     double hover_min_height_ = 0.3;
     std::string hover_safety_action_ = "landing";
     ros::Time hover_danger_since_;
+
+    // ---- 接管下降沿 + 油门偏置估计器 ----
+    bool   override_prev_ = false;       // 上一拍是否接管（检测下降沿刷新 hover_target_）
+    bool   hover_bias_enabled_ = true;   // 偏置估计器总开关
+    double hover_bias_ki_ = 3.0;         // 积分增益 PWM/(m·s)
+    double hover_bias_max_ = 80.0;       // bias 限幅 ±PWM
+    double hover_bias_ep_max_ = 0.4;     // 仅 |ep_z| < 该值时积分
+    double hover_bias_vz_max_ = 0.3;     // 仅 |v_z| < 该值时积分
+    double hover_bias_ = 0.0;            // 学习到的悬停油门偏置 PWM
+    ros::Time last_bias_time_;           // 上一拍偏置更新时间
 
     std::string target_mode_ = "relative";   // relative=相对增量 / absolute=固定绝对点
     std::string trigger_source_ = "ch6";     // ch6=遥控 CH6 边沿 / topic=/traj_trigger 话题
